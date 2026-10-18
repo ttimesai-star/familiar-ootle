@@ -1,0 +1,22 @@
+name: l1probe
+
+# Manual only: prints the Minotari console wallet CLI surface (no wallet is created, nothing secret is produced).
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: download esmeralda suite
+        run: |
+          curl -sSL -o suite.zip https://github.com/tari-project/tari/releases/download/v6.1.0/tari_suite-6.1.0-esme-463e53d-linux-x86_64.zip
+          unzip -o -q suite.zip -d suite
+          find suite -maxdepth 3 -type f | head -50
+      - name: wallet help
+        run: |
+          W=$(find suite -name minotari_console_wallet -type f | head -1)
+          chmod +x "$W"
+          "$W" --help || true
+          "$W" --network esmeralda --non-interactive-mode --password probe --command "help" 2>&1 | tail -80 || true

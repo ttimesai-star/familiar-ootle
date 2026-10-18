@@ -5,3 +5,6 @@ target/
 secrets/
 *.key
 *.seed
+
+# internal (Russian) spec lives outside the repo: ../SPEC_*.md
+docs/SPEC_*
