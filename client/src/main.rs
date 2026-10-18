@@ -567,7 +567,7 @@ async fn main() -> Result<()> {
     let unsigned = if funded_account {
         // A persistent testnet funder: its account was topped up beforehand (the shared faucet can run dry).
         let account = p.default_signer_address().to_account_address();
-        Transaction::builder(p.network(), max_epoch)
+        let unsigned = Transaction::builder(p.network(), max_epoch)
             .with_fee_instructions_builder(|f| {
                 f.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(fund_total)])
                     .put_last_instruction_output_on_workspace("funds")
