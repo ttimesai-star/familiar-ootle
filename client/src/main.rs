@@ -24,7 +24,7 @@ use ootle_rs::{
     default_indexer_url,
     key_provider::PrivateKeyProvider,
     keys::OotleSecretKey,
-    provider::{IndexerProvider, Provider, ProviderBuilder, WalletProvider},
+    provider::{IndexerProvider, Provider, ProviderBuilder, WalletProvider, WantInput},
     stealth::StealthTransfer,
     wallet::OotleWallet,
 };
@@ -578,7 +578,16 @@ async fn main() -> Result<()> {
             .with_auto_fill_inputs()
             .add_input(TARI_TOKEN)
             .add_input(account)
-            .build_unsigned()
+            .build_unsigned();
+        // The account's TARI vault is not found by auto-fill; resolve it the way ootle-rs builders do.
+        let want = std::collections::HashSet::from([WantInput::VaultForResource {
+            component_address: account,
+            resource_address: TARI_TOKEN,
+            required: true,
+        }]);
+        p.resolve_input_want_list(unsigned, &want)
+            .await
+            .map_err(|e| anyhow!("resolve account vault: {e:?}"))?
     } else {
         IFaucet::new(&p, max_epoch)
             .take_faucet_funds()
