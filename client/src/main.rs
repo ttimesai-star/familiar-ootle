@@ -11,6 +11,8 @@
 //! Every key is generated for this run and dropped at the end. Only public keys and transaction ids are written to
 //! the report. Testnet only: tTARI has no value.
 
+mod l1proof;
+
 use std::{fmt::Write as _, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -18,7 +20,7 @@ use ootle_byte_type::ToByteType;
 use ootle_rs::{
     Network, ToAccountAddress, TransactionRequest,
     builtin_templates::{UnsignedTransactionBuilder, faucet::IFaucet},
-    claim_burn::{ClaimBurn, MinotariBurnClaimProof},
+    claim_burn::ClaimBurn,
     default_indexer_url,
     key_provider::PrivateKeyProvider,
     keys::OotleSecretKey,
@@ -361,12 +363,6 @@ fn keygen(network: Network, path: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(serde::Deserialize)]
-struct BurnProofFile {
-    claim_proof: MinotariBurnClaimProof,
-    encrypted_data: EncryptedData,
-}
-
 fn not_yet_valid() -> ! {
     println!("NOT_YET_VALID");
     std::process::exit(3)
@@ -383,10 +379,8 @@ async fn claim(network: Network, proof_path: &str, burned: u64) -> Result<()> {
         .await
         .context("connect indexer")?;
     let max_epoch = Epoch(p.get_epoch().await?.as_u64() + 30);
-    let BurnProofFile {
-        claim_proof,
-        encrypted_data,
-    } = serde_json::from_str(&std::fs::read_to_string(proof_path).context("read proof")?).context("parse proof")?;
+    let (claim_proof, encrypted_data) =
+        l1proof::read_proof_file(&std::fs::read_to_string(proof_path).context("read proof")?)?;
     let (unsigned, sealer) = ClaimBurn::new(&p, claim_proof, encrypted_data, max_epoch)
         .with_max_fee(CLAIM_FEE)
         .prepare()
@@ -486,6 +480,14 @@ async fn main() -> Result<()> {
     let network = Network::Esmeralda;
     if args.len() == 3 && args[1] == "keygen" {
         return keygen(network, &args[2]);
+    }
+    if args.len() == 2 && args[1] == "pubkey" {
+        let v = std::env::var("FAMILIAR_FUNDER").context("FAMILIAR_FUNDER not set")?;
+        let secret = funder_secret(network, v.trim())?;
+        let account_pk = RistrettoPublicKey::from_secret_key(secret.account_secret());
+        println!("account public key: {}", account_pk.to_hex());
+        println!("address:            {}", secret.to_address());
+        return Ok(());
     }
     if args.len() == 4 && args[1] == "claim" {
         let burned: u64 = args[3].parse().context("burned amount (uT)")?;

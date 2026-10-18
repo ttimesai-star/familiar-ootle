@@ -1,11 +1,13 @@
 name: fund-and-run
 
-# Manual only, Esmeralda testnet (no value): fresh funder key -> L1 tXTM from the public faucet -> burn to the funder
-# -> ClaimBurn into the funder's Ootle account -> the full Familiar scenario. Every key lives only inside this run.
+# Manual only, Esmeralda testnet (no value): L1 tXTM from the public faucet -> burn to the persistent funder
+# (repo secret FAMILIAR_FUNDER) -> ClaimBurn into the funder's Ootle account -> the full Familiar scenario.
+# The burn proof is uploaded, so a failed claim can be retried; the L1 wallet lives only inside this run.
 on:
   workflow_dispatch:
 
 env:
+  FAMILIAR_FUNDER: ${{ secrets.FAMILIAR_FUNDER }}
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
 
@@ -32,16 +34,21 @@ jobs:
           ./binaryen-version_119/bin/wasm-opt -Oz --enable-bulk-memory --strip-debug --strip-producers --strip-target-features templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm -o familiar.min.wasm
           sha256sum familiar.min.wasm | tee wasm.sha256
           cargo build -p familiar-cli --release
-      - name: funder key (masked)
+      - name: funder public key
         shell: bash
         run: |
-          ./target/release/familiar keygen funder.txt | tee keygen.out
-          echo "::add-mask::$(cat funder.txt)"
-          echo "FAMILIAR_FUNDER=$(cat funder.txt)" >> "$GITHUB_ENV"
+          ./target/release/familiar pubkey | tee keygen.out
           grep "account public key" keygen.out | awk '{print $NF}' > claim_pk.hex
       - name: L1 faucet + burn
         shell: bash
         run: bash scripts/l1_burn.sh 2>&1 | tee l1.log
+      - name: upload burn proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burn-proof
+          path: l1/burn_proofs/
+          if-no-files-found: ignore
       - name: claim on Ootle (retry while NotYetValid)
         shell: bash
         run: |
