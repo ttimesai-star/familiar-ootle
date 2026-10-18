@@ -1,0 +1,45 @@
+name: esmeralda
+
+# Manual only: runs the full Familiar scenario on the Esmeralda testnet (faucet tTARI, no value) and uploads the
+# report with transaction ids. Every key is generated inside the run and discarded.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  scenario:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: client
+          workspaces: |
+            . -> target
+            templates/familiar -> target
+      - name: build template + wasm-opt
+        shell: bash
+        run: |
+          (cd templates/familiar && cargo build --release --target wasm32-unknown-unknown)
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_119/binaryen-version_119-x86_64-linux.tar.gz | tar xz
+          ./binaryen-version_119/bin/wasm-opt -Oz --enable-bulk-memory --strip-debug --strip-producers --strip-target-features templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm -o familiar.min.wasm
+          ls -l familiar.min.wasm && sha256sum familiar.min.wasm | tee wasm.sha256
+      - name: run scenario
+        shell: bash
+        run: cargo run -p familiar-cli --release -- scenario familiar.min.wasm esmeralda_run.md 2>&1 | tee scenario.log
+      - name: upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: esmeralda-report
+          path: |
+            esmeralda_run.md
+            scenario.log
+            wasm.sha256

@@ -32,11 +32,39 @@ jobs:
       - name: build template (release wasm)
         working-directory: templates/familiar
         run: cargo build --release --target wasm32-unknown-unknown
-      - name: wasm size
-        run: ls -l templates/familiar/target/wasm32-unknown-unknown/release/*.wasm
+      - name: wasm-opt (strip custom sections, as the engine requires for a raw publish)
+        run: |
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_119/binaryen-version_119-x86_64-linux.tar.gz | tar xz
+          ./binaryen-version_119/bin/wasm-opt -Oz --enable-bulk-memory --strip-debug --strip-producers --strip-target-features             templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm -o familiar.min.wasm
+          ls -l templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm familiar.min.wasm
+          sha256sum familiar.min.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: familiar-wasm
+          path: familiar.min.wasm
       - name: clippy (wasm)
         working-directory: templates/familiar
         run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+
+  client:
+    name: esmeralda client builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: client
+      - name: cargo build -p familiar-cli
+        shell: bash
+        run: cargo build -p familiar-cli 2>&1 | tee client.log
+      - name: upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-log
+          path: client.log
 
   engine-tests:
     name: engine tests (in-process Ootle engine)
@@ -59,7 +87,7 @@ jobs:
         run: df -h /
       - name: cargo test
         shell: bash
-        run: /usr/bin/time -v cargo test --workspace --tests -- --nocapture --test-threads=2 2>&1 | tee test.log
+        run: /usr/bin/time -v cargo test -p familiar-tests -p familiar_core --tests -- --nocapture --test-threads=2 2>&1 | tee test.log
       - name: upload Cargo.lock and log
         if: always()
         uses: actions/upload-artifact@v4

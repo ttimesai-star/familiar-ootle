@@ -8,10 +8,7 @@
 //! Each refusal test checks the exact reason, so a test cannot pass because something unrelated failed.
 
 use tari_template_lib::types::{
-    Amount,
-    ComponentAddress,
-    Hash32,
-    ResourceAddress,
+    Amount, ComponentAddress, Hash32, ResourceAddress,
     bytes::Bytes,
     crypto::RistrettoPublicKeyBytes,
     rule,
@@ -87,7 +84,13 @@ fn set_epoch(test: &mut TemplateTest, epoch: u64) {
     test.set_virtual_substate(VirtualSubstateId::CurrentEpoch, VirtualSubstate::CurrentEpoch(epoch));
 }
 
-fn tx_method(w: &World, component: ComponentAddress, method: &str, args: Vec<NamedArg>, signer: &RistrettoSecretKey) -> Transaction {
+fn tx_method(
+    w: &World,
+    component: ComponentAddress,
+    method: &str,
+    args: Vec<NamedArg>,
+    signer: &RistrettoSecretKey,
+) -> Transaction {
     w.test
         .transaction()
         .call_method(component, method, args)
@@ -97,11 +100,10 @@ fn tx_method(w: &World, component: ComponentAddress, method: &str, args: Vec<Nam
 
 /// A leash with LIMIT per WINDOW epochs, two allow-listed payees, the budget root set, and two 100-unit budget UTXOs.
 fn world() -> World {
-    let mut test = TemplateTest::new(env!("CARGO_MANIFEST_DIR"), [
-        "templates/familiar",
-        "templates/test_faucet",
-        "templates/mallory",
-    ]);
+    let mut test = TemplateTest::new(
+        env!("CARGO_MANIFEST_DIR"),
+        ["templates/familiar", "templates/test_faucet", "templates/mallory"],
+    );
     test.enable_auto_add_proofs_from_signers();
     set_epoch(&mut test, START_EPOCH);
 
@@ -117,9 +119,12 @@ fn world() -> World {
     let payees = vec![keys(&mut test, 4), keys(&mut test, 5)];
     let payee_roots: Vec<Hash32> = payees.iter().map(|p| root_of(&[key_leaf(p.pk)])).collect();
 
-    let leash: ComponentAddress = test.call_function("Familiar", "new", args![
-        resource, agent.pk, owner.pk, LIMIT, WINDOW, payee_roots
-    ], vec![]);
+    let leash: ComponentAddress = test.call_function(
+        "Familiar",
+        "new",
+        args![resource, agent.pk, owner.pk, LIMIT, WINDOW, payee_roots],
+        vec![],
+    );
     let leaves = vec![errand(leash), key_leaf(owner.pk)];
 
     let mut w = World {
@@ -148,7 +153,13 @@ fn fund(w: &mut World, values: &[u64]) {
         .map(|v| (*v, OutputAuthSpec::Conditions(w.leaves.clone())))
         .collect();
     let data = stealth::generate_transfer_data(stealth::NO_INPUTS, total, outputs, 0u64);
-    let tx = tx_method(w, w.faucet, "fund", args![data.statement.clone()], &w.test.secret_key().clone());
+    let tx = tx_method(
+        w,
+        w.faucet,
+        "fund",
+        args![data.statement.clone()],
+        &w.test.secret_key().clone(),
+    );
     w.test.execute_expect_success(tx, vec![]);
     for (i, v) in values.iter().enumerate() {
         w.budget.push(Utxo {
@@ -178,7 +189,13 @@ fn budget_auth(w: &World) -> OutputAuthSpec {
 }
 
 /// Spend budget UTXO `idx` through the errand leaf: `amount` to `to`, the change back under `change`.
-fn pay_statement(w: &World, idx: usize, amount: u64, to: OutputAuthSpec, change: OutputAuthSpec) -> StealthSecretTransferData {
+fn pay_statement(
+    w: &World,
+    idx: usize,
+    amount: u64,
+    to: OutputAuthSpec,
+    change: OutputAuthSpec,
+) -> StealthSecretTransferData {
     let value = w.budget[idx].value;
     stealth::generate_transfer_data(
         [budget_input(w, idx, 0)],
@@ -298,14 +315,25 @@ fn window_limit_refuses_with_numbers_then_reopens_next_window() {
 fn single_payment_over_the_covenant_allowance_is_refused() {
     let mut w = world();
     let data = pay_statement(&w, 0, MAX_PER_PAYMENT + 1, payee_auth(&w, 0), budget_auth(&w));
-    pay_refused(&mut w, &data, Who::Agent, "covenant not satisfied: BalancePreserved(40)");
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "covenant not satisfied: BalancePreserved(40)",
+    );
 }
 
 #[test]
 fn spending_the_budget_from_a_hostile_component_is_refused() {
     let mut w = world();
     let mallory: ComponentAddress = w.test.call_function("Mallory", "new", args![w.resource], vec![]);
-    let data = pay_statement(&w, 0, 30, OutputAuthSpec::KeyPath(w.stranger.pk), OutputAuthSpec::KeyPath(w.stranger.pk));
+    let data = pay_statement(
+        &w,
+        0,
+        30,
+        OutputAuthSpec::KeyPath(w.stranger.pk),
+        OutputAuthSpec::KeyPath(w.stranger.pk),
+    );
     let tx = tx_method(&w, mallory, "steal", args![data.statement.clone()], &w.agent.sk.clone());
     let reason = w.test.execute_expect_failure(tx, vec![]);
     assert_reject_reason(&reason, "Access Denied: native.stealth_utxo.spend");
@@ -344,14 +372,24 @@ fn payment_to_a_payee_not_on_the_leash_is_refused() {
     let mut w = world();
     let to = OutputAuthSpec::Conditions(vec![key_leaf(w.stranger.pk)]);
     let data = pay_statement(&w, 0, 10, to, budget_auth(&w));
-    pay_refused(&mut w, &data, Who::Agent, "familiar: output to a payee not on the leash");
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: output to a payee not on the leash",
+    );
 }
 
 #[test]
 fn payout_to_a_plain_key_is_refused() {
     let mut w = world();
     let data = pay_statement(&w, 0, 10, OutputAuthSpec::KeyPath(w.agent.pk), budget_auth(&w));
-    pay_refused(&mut w, &data, Who::Agent, "familiar: output to a payee not on the leash");
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: output to a payee not on the leash",
+    );
 }
 
 #[test]
@@ -362,7 +400,12 @@ fn change_with_an_added_key_path_is_refused() {
         conditions: w.leaves.clone(),
     };
     let data = pay_statement(&w, 0, 10, payee_auth(&w, 0), change);
-    pay_refused(&mut w, &data, Who::Agent, "familiar: output to a payee not on the leash");
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: output to a payee not on the leash",
+    );
 }
 
 #[test]
@@ -426,7 +469,12 @@ fn owner_can_tighten_the_policy() {
     let tx = tx_method(&w, w.leash, "set_policy", args![15u64, WINDOW], &w.owner.sk.clone());
     w.test.execute_expect_success(tx, vec![]);
     let data = pay_statement(&w, 0, 16, payee_auth(&w, 0), budget_auth(&w));
-    pay_refused(&mut w, &data, Who::Agent, "familiar: window limit exceeded: 0 of 15 spent");
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: window limit exceeded: 0 of 15 spent",
+    );
 }
 
 #[test]
@@ -491,11 +539,26 @@ fn construction_rejects_bad_parameters() {
     let template = w.test.get_template_address("Familiar");
     let payee = root_of(&[key_leaf(w.payees[0].pk)]);
     let cases: Vec<(Vec<NamedArg>, &str)> = vec![
-        (args![w.resource, w.agent.pk, w.owner.pk, 0u64, WINDOW, vec![payee]], "familiar: invalid policy"),
-        (args![w.resource, w.agent.pk, w.owner.pk, LIMIT, 0u64, vec![payee]], "familiar: invalid policy"),
-        (args![w.resource, w.agent.pk, w.owner.pk, LIMIT, WINDOW, Vec::<Hash32>::new()], "familiar: at least one payee"),
-        (args![w.resource, w.agent.pk, w.owner.pk, LIMIT, WINDOW, vec![payee, payee]], "familiar: duplicate payee"),
-        (args![w.resource, w.agent.pk, w.agent.pk, LIMIT, WINDOW, vec![payee]], "familiar: agent and owner keys must differ"),
+        (
+            args![w.resource, w.agent.pk, w.owner.pk, 0u64, WINDOW, vec![payee]],
+            "familiar: invalid policy",
+        ),
+        (
+            args![w.resource, w.agent.pk, w.owner.pk, LIMIT, 0u64, vec![payee]],
+            "familiar: invalid policy",
+        ),
+        (
+            args![w.resource, w.agent.pk, w.owner.pk, LIMIT, WINDOW, Vec::<Hash32>::new()],
+            "familiar: at least one payee",
+        ),
+        (
+            args![w.resource, w.agent.pk, w.owner.pk, LIMIT, WINDOW, vec![payee, payee]],
+            "familiar: duplicate payee",
+        ),
+        (
+            args![w.resource, w.agent.pk, w.agent.pk, LIMIT, WINDOW, vec![payee]],
+            "familiar: agent and owner keys must differ",
+        ),
     ];
     for (a, expected) in cases {
         let tx = w
@@ -513,9 +576,12 @@ fn construction_rejects_bad_parameters() {
 fn pay_without_a_budget_root_is_refused() {
     let mut w = world();
     let payee = root_of(&[key_leaf(w.payees[0].pk)]);
-    let fresh: ComponentAddress = w.test.call_function("Familiar", "new", args![
-        w.resource, w.agent.pk, w.owner.pk, LIMIT, WINDOW, vec![payee]
-    ], vec![]);
+    let fresh: ComponentAddress = w.test.call_function(
+        "Familiar",
+        "new",
+        args![w.resource, w.agent.pk, w.owner.pk, LIMIT, WINDOW, vec![payee]],
+        vec![],
+    );
     let data = pay_statement(&w, 0, 10, payee_auth(&w, 0), budget_auth(&w));
     let tx = tx_method(&w, fresh, "pay", args![data.statement.clone()], &w.agent.sk.clone());
     let reason = w.test.execute_expect_failure(tx, vec![]);

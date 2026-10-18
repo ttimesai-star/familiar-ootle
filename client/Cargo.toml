@@ -1,0 +1,22 @@
+[package]
+name = "familiar-cli"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Esmeralda testnet client for Familiar: publishes the template, creates a leash, pays, attacks, recalls"
+
+[[bin]]
+name = "familiar"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+ootle-rs = "0.28"
+ootle_byte_type = "0.16"
+rand = "0.10"
+tari_crypto = "0.24"
+tari_ootle_transaction = "0.46"
+tari_ootle_wallet_crypto = "0.47"
+tari_template_lib_types = "0.34"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

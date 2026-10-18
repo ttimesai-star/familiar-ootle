@@ -37,7 +37,7 @@ impl fmt::Display for Refusal {
             Self::ZeroPayment => write!(f, "familiar: zero payment"),
             Self::ClockWentBack { now, start } => {
                 write!(f, "familiar: epoch {now} is before the window start {start}")
-            },
+            }
             Self::WindowLimit { spent, amount, limit } => write!(
                 f,
                 "familiar: window limit exceeded: {spent} of {limit} spent, {} left, payment of {amount} refused",
@@ -125,11 +125,14 @@ mod tests {
     fn refuses_past_the_limit_with_numbers() {
         let w = charge(&P, W0, 51, 90).unwrap();
         let err = charge(&P, w, 52, 11).unwrap_err();
-        assert_eq!(err, Refusal::WindowLimit {
-            spent: 90,
-            amount: 11,
-            limit: 100
-        });
+        assert_eq!(
+            err,
+            Refusal::WindowLimit {
+                spent: 90,
+                amount: 11,
+                limit: 100
+            }
+        );
         assert_eq!(
             err.to_string(),
             "familiar: window limit exceeded: 90 of 100 spent, 10 left, payment of 11 refused"
@@ -147,7 +150,10 @@ mod tests {
     #[test]
     fn refuses_zero_backwards_clock_overflow_and_bad_policy() {
         assert_eq!(charge(&P, W0, 50, 0).unwrap_err(), Refusal::ZeroPayment);
-        assert_eq!(charge(&P, W0, 49, 1).unwrap_err(), Refusal::ClockWentBack { now: 49, start: 50 });
+        assert_eq!(
+            charge(&P, W0, 49, 1).unwrap_err(),
+            Refusal::ClockWentBack { now: 49, start: 50 }
+        );
         let big = Policy {
             limit: u64::MAX,
             window_epochs: 10,
@@ -203,10 +209,10 @@ mod tests {
                                 *per_window.entry(k).or_default() += amount;
                                 assert_eq!(nw.start, origin + k * window_epochs);
                                 w = nw;
-                            },
+                            }
                             Err(_) => {
                                 // stored window untouched by a refusal (the caller keeps `w`)
-                            },
+                            }
                         }
                     }
                     for (k, total) in per_window {

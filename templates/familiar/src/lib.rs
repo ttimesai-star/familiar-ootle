@@ -103,7 +103,7 @@ mod familiar {
             let mut payee_outputs = 0u64;
             for output in spend.stealth_outputs() {
                 match &output.auth {
-                    SpendAuthorization::Script(root) if *root == budget_root => {},
+                    SpendAuthorization::Script(root) if *root == budget_root => {}
                     SpendAuthorization::Script(root) if self.payees.contains(root) => payee_outputs += 1,
                     _ => panic!("familiar: output to a payee not on the leash"),
                 }
@@ -137,11 +137,14 @@ mod familiar {
             self.window_start = window.start;
             self.spent = window.spent;
             self.payments += 1;
-            emit_event("Paid", metadata![
-                "payment" => self.payments.to_string(),
-                "amount" => amount.to_string(),
-                "payee_outputs" => payee_outputs.to_string(),
-            ]);
+            emit_event(
+                "Paid",
+                metadata![
+                    "payment" => self.payments.to_string(),
+                    "amount" => amount.to_string(),
+                    "payee_outputs" => payee_outputs.to_string(),
+                ],
+            );
         }
 
         /// Public view of the leash: the rule and the current window. The budget itself is not here: it lives in
