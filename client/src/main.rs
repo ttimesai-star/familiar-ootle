@@ -235,7 +235,7 @@ struct Sent {
 
 fn one_line(s: &str) -> String {
     let s = s.replace(['\n', '|'], " ");
-    s.chars().take(300).collect()
+    s.chars().take(700).collect()
 }
 
 /// Pulls the human message out of a Debug-printed engine result, e.g. `message: "familiar: ..."`.
@@ -244,6 +244,12 @@ fn reason_of(debug: &str) -> String {
         let rest = &debug[i + 10..];
         if let Some(j) = rest.find('"') {
             return one_line(&rest[..j]);
+        }
+    }
+    // Rejections without a message field: show the failure itself rather than the state diff before it.
+    for marker in ["ExecutionFailure", "Reject(", "reason:"] {
+        if let Some(i) = debug.rfind(marker) {
+            return one_line(&debug[i..]);
         }
     }
     one_line(debug)
