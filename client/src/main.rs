@@ -16,10 +16,11 @@ use std::{fmt::Write as _, time::Duration};
 use anyhow::{Context, Result, anyhow, bail};
 use ootle_byte_type::ToByteType;
 use ootle_rs::{
-    Network, TransactionRequest,
+    Network, ToAccountAddress, TransactionRequest,
     builtin_templates::{UnsignedTransactionBuilder, faucet::IFaucet},
     default_indexer_url,
     key_provider::PrivateKeyProvider,
+    keys::OotleSecretKey,
     provider::{IndexerProvider, Provider, ProviderBuilder, WalletProvider},
     wallet::OotleWallet,
 };
