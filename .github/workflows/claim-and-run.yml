@@ -1,0 +1,93 @@
+name: claim-and-run
+
+# Manual only, Esmeralda testnet: claims a burn proof saved by an earlier fund-and-run (artifact "burn-proof") into
+# the persistent funder, then runs the Familiar scenario. Set skip_claim to run the scenario on an already funded funder.
+on:
+  workflow_dispatch:
+    inputs:
+      proof_run_id:
+        description: run id of the fund-and-run that uploaded the burn proof
+        required: false
+      burn_amount:
+        description: burned amount in uT
+        required: false
+        default: "9999800000"
+      skip_claim:
+        description: skip the claim (funder already funded)
+        required: false
+        default: "false"
+      fund_total:
+        description: uT the scenario takes from the funder
+        required: false
+        default: "100000000"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  FAMILIAR_FUNDER: ${{ secrets.FAMILIAR_FUNDER }}
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: client
+          workspaces: |
+            . -> target
+            templates/familiar -> target
+      - name: build template + wasm-opt + client
+        shell: bash
+        run: |
+          (cd templates/familiar && cargo build --release --target wasm32-unknown-unknown)
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_119/binaryen-version_119-x86_64-linux.tar.gz | tar xz
+          ./binaryen-version_119/bin/wasm-opt -Oz --enable-bulk-memory --strip-debug --strip-producers --strip-target-features templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm -o familiar.min.wasm
+          sha256sum familiar.min.wasm | tee wasm.sha256
+          cargo build -p familiar-cli --release
+      - name: fetch burn proof
+        if: inputs.skip_claim != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: burn-proof
+          path: proof
+          run-id: ${{ inputs.proof_run_id }}
+          github-token: ${{ github.token }}
+      - name: claim on Ootle (retry while NotYetValid)
+        if: inputs.skip_claim != 'true'
+        shell: bash
+        run: |
+          PROOF_FILE=$(find proof -name '*.json' | head -1)
+          for i in $(seq 1 80); do
+            set +e
+            ./target/release/familiar claim "$PROOF_FILE" "${{ inputs.burn_amount }}" 2>&1 | tee -a claim.log
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" = "0" ]; then exit 0; fi
+            if [ "$rc" != "3" ]; then exit "$rc"; fi
+            echo "$(date -u +%H:%M:%S) not yet claimable, waiting"; sleep 120
+          done
+          exit 1
+      - name: scenario
+        shell: bash
+        run: |
+          FAMILIAR_FUND_TOTAL=${{ inputs.fund_total }} ./target/release/familiar scenario familiar.min.wasm esmeralda_run.md 2>&1 | tee scenario.log
+      - name: upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claim-and-run-report
+          path: |
+            esmeralda_run.md
+            scenario.log
+            claim.log
+            wasm.sha256
+          if-no-files-found: ignore

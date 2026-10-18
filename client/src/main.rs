@@ -416,10 +416,18 @@ async fn claim(network: Network, proof_path: &str, burned: u64) -> Result<()> {
     let pending = p.send_transaction(tx).await.context("submit claim")?;
     println!("claim tx {}", pending.tx_id());
     let _ = pending.watch().await;
-    let rc = pending
-        .get_receipt()
-        .await
-        .map_err(|e| anyhow!("claim receipt: {e:?}"))?;
+    let rc = match pending.get_receipt().await {
+        Ok(rc) => rc,
+        Err(e) => {
+            let d = format!("{e:?}");
+            // A rejected claim spends nothing, so it is safe to retry later.
+            if d.contains("NotYetValid") {
+                println!("{}", one_line(&d));
+                not_yet_valid();
+            }
+            bail!("claim receipt: {}", one_line(&d));
+        }
+    };
     println!("claim outcome {:?}", rc.outcome);
     let utxo = rc
         .diff_summary
