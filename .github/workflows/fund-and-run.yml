@@ -1,0 +1,74 @@
+name: fund-and-run
+
+# Manual only, Esmeralda testnet (no value): fresh funder key -> L1 tXTM from the public faucet -> burn to the funder
+# -> ClaimBurn into the funder's Ootle account -> the full Familiar scenario. Every key lives only inside this run.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: client
+          workspaces: |
+            . -> target
+            templates/familiar -> target
+      - name: build template + wasm-opt + client
+        shell: bash
+        run: |
+          (cd templates/familiar && cargo build --release --target wasm32-unknown-unknown)
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_119/binaryen-version_119-x86_64-linux.tar.gz | tar xz
+          ./binaryen-version_119/bin/wasm-opt -Oz --enable-bulk-memory --strip-debug --strip-producers --strip-target-features templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm -o familiar.min.wasm
+          sha256sum familiar.min.wasm | tee wasm.sha256
+          cargo build -p familiar-cli --release
+      - name: funder key (masked)
+        shell: bash
+        run: |
+          ./target/release/familiar keygen funder.txt | tee keygen.out
+          echo "::add-mask::$(cat funder.txt)"
+          echo "FAMILIAR_FUNDER=$(cat funder.txt)" >> "$GITHUB_ENV"
+          grep "account public key" keygen.out | awk '{print $NF}' > claim_pk.hex
+      - name: L1 faucet + burn
+        shell: bash
+        run: bash scripts/l1_burn.sh 2>&1 | tee l1.log
+      - name: claim on Ootle (retry while NotYetValid)
+        shell: bash
+        run: |
+          for i in $(seq 1 60); do
+            set +e
+            ./target/release/familiar claim "$PROOF_FILE" "$BURN_AMOUNT" 2>&1 | tee -a claim.log
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" = "0" ]; then exit 0; fi
+            if [ "$rc" != "3" ]; then exit "$rc"; fi
+            echo "$(date -u +%H:%M:%S) not yet claimable, waiting"; sleep 120
+          done
+          exit 1
+      - name: scenario
+        shell: bash
+        run: |
+          echo "FAMILIAR_FUND_TOTAL=$((BURN_AMOUNT - 200000))" >> "$GITHUB_ENV"
+          FAMILIAR_FUND_TOTAL=$((BURN_AMOUNT - 200000)) ./target/release/familiar scenario familiar.min.wasm esmeralda_run.md 2>&1 | tee scenario.log
+      - name: upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fund-and-run-report
+          path: |
+            esmeralda_run.md
+            scenario.log
+            claim.log
+            l1.log
+            wasm.sha256
+            keygen.out

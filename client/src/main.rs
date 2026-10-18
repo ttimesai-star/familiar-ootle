@@ -18,10 +18,12 @@ use ootle_byte_type::ToByteType;
 use ootle_rs::{
     Network, ToAccountAddress, TransactionRequest,
     builtin_templates::{UnsignedTransactionBuilder, faucet::IFaucet},
+    claim_burn::{ClaimBurn, MinotariBurnClaimProof},
     default_indexer_url,
     key_provider::PrivateKeyProvider,
     keys::OotleSecretKey,
     provider::{IndexerProvider, Provider, ProviderBuilder, WalletProvider},
+    stealth::StealthTransfer,
     wallet::OotleWallet,
 };
 use tari_crypto::{
@@ -49,13 +51,15 @@ type Prov = IndexerProvider<OotleWallet>;
 const EXPLORER: &str = "https://explorer.tari.mw/tx/";
 /// Fee revealed by each transaction's fee intent. A stealth-reveal fee keeps no change, so this is the price of a
 /// demo transaction, not an estimate; the publish fee is taken from a dry run instead.
-const FEE: u64 = 300_000;
+const FEE: u64 = 20_000;
 const LIMIT: u64 = TARI; // 1 tTARI per window
 const WINDOW_EPOCHS: u64 = 10_000;
 const MAX_PER_PAYMENT: u64 = 400_000; // 0.4 tTARI per single spend (native covenant)
 const BUDGET_UTXO: u64 = 2 * TARI;
-/// What one run needs in total: fee coins for agent (5), owner (23), stranger (1) and the funding fee (1).
-const FUND_TOTAL: u64 = 30 * TARI;
+/// Default amount one run takes from the funder (override with FAMILIAR_FUND_TOTAL, in uT).
+const DEFAULT_FUND_TOTAL: u64 = 30 * TARI;
+/// Max fee revealed by the burn claim transaction.
+const CLAIM_FEE: u64 = 20_000;
 
 #[derive(Clone)]
 struct Coin {
@@ -357,6 +361,120 @@ fn keygen(network: Network, path: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+struct BurnProofFile {
+    claim_proof: MinotariBurnClaimProof,
+    encrypted_data: EncryptedData,
+}
+
+fn not_yet_valid() -> ! {
+    println!("NOT_YET_VALID");
+    std::process::exit(3)
+}
+
+/// Claims an L1 burn (made to the funder's account public key) into the funder's Ootle account. Exits with code 3
+/// and prints NOT_YET_VALID while the burn is still inside the confirmation window.
+async fn claim(network: Network, proof_path: &str, burned: u64) -> Result<()> {
+    let v = std::env::var("FAMILIAR_FUNDER").context("FAMILIAR_FUNDER not set")?;
+    let wallet = OotleWallet::from(funder_from(network, v.trim())?);
+    let mut p: Prov = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_with_transaction_timeout(default_indexer_url(network), Duration::from_secs(180))
+        .await
+        .context("connect indexer")?;
+    let max_epoch = Epoch(p.get_epoch().await?.as_u64() + 30);
+    let BurnProofFile {
+        claim_proof,
+        encrypted_data,
+    } = serde_json::from_str(&std::fs::read_to_string(proof_path).context("read proof")?).context("parse proof")?;
+    let (unsigned, sealer) = ClaimBurn::new(&p, claim_proof, encrypted_data, max_epoch)
+        .with_max_fee(CLAIM_FEE)
+        .prepare()
+        .await
+        .map_err(|e| anyhow!("claim prepare: {e:?}"))?;
+    match p.sign_and_send_dry_run_with(&sealer, unsigned.clone()).await {
+        Ok(r) => {
+            let d = format!("{:?}", r.finalize.result);
+            if !d.starts_with("Accept(") {
+                if d.contains("NotYetValid") {
+                    not_yet_valid();
+                }
+                bail!("claim dry run refused: {}", reason_of(&d));
+            }
+        }
+        Err(e) => {
+            let d = format!("{e:?}");
+            if d.contains("NotYetValid") {
+                not_yet_valid();
+            }
+            bail!("claim dry run error: {}", one_line(&d));
+        }
+    }
+    let tx = TransactionRequest::default()
+        .with_transaction(unsigned)
+        .build(&sealer)
+        .await
+        .context("seal claim")?;
+    let pending = p.send_transaction(tx).await.context("submit claim")?;
+    println!("claim tx {}", pending.tx_id());
+    let _ = pending.watch().await;
+    let rc = pending
+        .get_receipt()
+        .await
+        .map_err(|e| anyhow!("claim receipt: {e:?}"))?;
+    println!("claim outcome {:?}", rc.outcome);
+    let utxo = rc
+        .diff_summary
+        .upped
+        .iter()
+        .find_map(|s| s.substate_id.as_utxo_address())
+        .context("no claimed UTXO in the receipt")?;
+    let value = burned
+        .checked_sub(CLAIM_FEE)
+        .context("burn smaller than the claim fee")?;
+
+    // Move the claimed stealth UTXO into the funder's account, which the scenario withdraws from.
+    let funder_addr = p.default_signer_address().clone();
+    let account_pk = *funder_addr.account_public_key();
+    let (st, reqs) = StealthTransfer::new(TARI_TOKEN, &p)
+        .spend_stealth_input(funder_addr.clone(), &utxo)
+        .to_revealed_output(value)
+        .prepare()
+        .await
+        .map_err(|e| anyhow!("deposit statement: {e:?}"))?;
+    let unsigned = Transaction::builder(p.network(), max_epoch)
+        .with_fee_instructions_builder(|f| {
+            f.stealth_transfer(TARI_TOKEN, st)
+                .put_last_instruction_output_on_workspace("all")
+                .take_from_bucket("all", FEE, "fee")
+                .pay_fee_from_bucket("fee")
+                .create_account_with_bucket(account_pk, "all")
+        })
+        .with_auto_fill_inputs()
+        .add_input(TARI_TOKEN)
+        .add_input(utxo.clone())
+        .build_unsigned();
+    let authorizer = p.wallet().stealth_authorizer(reqs);
+    let tx = TransactionRequest::default()
+        .with_transaction(unsigned)
+        .build(&authorizer)
+        .await
+        .context("seal deposit")?;
+    let pending = p.send_transaction(tx).await.context("submit deposit")?;
+    println!("deposit tx {}", pending.tx_id());
+    let _ = pending.watch().await;
+    let rc = pending
+        .get_receipt()
+        .await
+        .map_err(|e| anyhow!("deposit receipt: {e:?}"))?;
+    println!(
+        "deposit outcome {:?} ({} uT into the funder account)",
+        rc.outcome,
+        value - FEE
+    );
+    Ok(())
+}
+
 fn fail_report(path: &str, r: &Report, why: String) -> Result<()> {
     std::fs::write(path, &r.md)?;
     bail!(why)
@@ -369,8 +487,14 @@ async fn main() -> Result<()> {
     if args.len() == 3 && args[1] == "keygen" {
         return keygen(network, &args[2]);
     }
+    if args.len() == 4 && args[1] == "claim" {
+        let burned: u64 = args[3].parse().context("burned amount (uT)")?;
+        return claim(network, &args[2], burned).await;
+    }
     if args.len() != 4 || args[1] != "scenario" {
-        bail!("usage: familiar keygen <secret-file> | familiar scenario <template.wasm> <report.md>");
+        bail!(
+            "usage: familiar keygen <secret-file> | familiar claim <proof.json> <burned-uT> | familiar scenario <template.wasm> <report.md>"
+        );
     }
     let wasm = std::fs::read(&args[2]).context("read wasm")?;
     let report_path = args[3].as_str();
@@ -405,16 +529,25 @@ async fn main() -> Result<()> {
     let stranger_keys = new_keys();
     let payees = [new_keys(), new_keys()];
     let funder_pk = *p.default_signer_address().account_public_key();
+    let fund_total: u64 = match std::env::var("FAMILIAR_FUND_TOTAL") {
+        Ok(v) if !v.trim().is_empty() => v.trim().parse().context("FAMILIAR_FUND_TOTAL")?,
+        _ => DEFAULT_FUND_TOTAL,
+    };
+    let agent_share = 20 * FEE;
+    let stranger_share = 3 * FEE;
+    let owner_share = fund_total
+        .checked_sub(FEE + agent_share + stranger_share)
+        .context("fund total too small")?;
     let outs = vec![
-        output(5 * TARI, SpendAuthorization::Key(agent_keys.pk))?,
-        output(23 * TARI, SpendAuthorization::Key(owner_keys.pk))?,
-        output(TARI, SpendAuthorization::Key(stranger_keys.pk))?,
+        output(agent_share, SpendAuthorization::Key(agent_keys.pk))?,
+        output(owner_share, SpendAuthorization::Key(owner_keys.pk))?,
+        output(stranger_share, SpendAuthorization::Key(stranger_keys.pk))?,
     ];
     let st = statement(
         vec![],
-        FUND_TOTAL,
+        fund_total,
         &outs,
-        Some(RevealedOutput::new(Amount::from(TARI), funder_pk)),
+        Some(RevealedOutput::new(Amount::from(FEE), funder_pk)),
     )?;
     let fee_coins = coins(&st, &outs);
     let unsigned = if funded_account {
@@ -422,7 +555,7 @@ async fn main() -> Result<()> {
         let account = p.default_signer_address().to_account_address();
         Transaction::builder(p.network(), max_epoch)
             .with_fee_instructions_builder(|f| {
-                f.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(FUND_TOTAL)])
+                f.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(fund_total)])
                     .put_last_instruction_output_on_workspace("funds")
                     .stealth_transfer_with_input_bucket(TARI_TOKEN, st, "funds")
                     .put_last_instruction_output_on_workspace("fees")
