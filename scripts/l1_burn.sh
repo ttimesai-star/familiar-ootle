@@ -49,7 +49,7 @@ for i in $(seq 1 120); do
   if [ "$AVAIL" -gt 0 ]; then break; fi
   sleep 30
 done
-[ "$AVAIL" -gt 0 ] || { echo "no tXTM arrived"; grep -iv "seed|word|mnemonic" l1/wallet.out | tail -40; exit 1; }
+[ "$AVAIL" -gt 0 ] || { echo "no tXTM arrived"; grep -Eiv "seed|word|mnemonic" l1/wallet.out | tail -40; exit 1; }
 
 # keep a margin for the L1 fee
 AMOUNT=$((AVAIL - 200000))
@@ -64,7 +64,7 @@ for i in $(seq 1 180); do
   if [ -n "$PROOF" ]; then break; fi
   sleep 30
 done
-[ -n "$PROOF" ] || { echo "no burn proof written"; grep -iv "seed|word|mnemonic" l1/wallet.out | tail -40; exit 1; }
+[ -n "$PROOF" ] || { echo "no burn proof written"; grep -Eiv "seed|word|mnemonic" l1/wallet.out | tail -40; exit 1; }
 echo "proof file: $PROOF (top-level keys: $(jq -c 'keys' "$PROOF"))"
 echo "BURN_AMOUNT=$AMOUNT" >> "$GITHUB_ENV"
 echo "PROOF_FILE=$PWD/$PROOF" >> "$GITHUB_ENV"
