@@ -252,7 +252,10 @@ fn reason_of(debug: &str) -> String {
             return one_line(&debug[i..]);
         }
     }
-    one_line(debug)
+    // AcceptFeeRejectRest(diff, reason): the reason is the tail.
+    let chars: Vec<char> = debug.chars().collect();
+    let tail: String = chars[chars.len().saturating_sub(600)..].iter().collect();
+    one_line(&tail)
 }
 
 /// Dry-runs `tx` (to capture the engine's reason if it is refused), then submits it for real, so that even a refusal
