@@ -58,6 +58,7 @@ jobs:
       - name: free disk
         run: df -h /
       - name: cargo test
+        shell: bash
         run: /usr/bin/time -v cargo test --workspace --tests -- --nocapture --test-threads=2 2>&1 | tee test.log
       - name: upload Cargo.lock and log
         if: always()

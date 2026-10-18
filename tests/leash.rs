@@ -214,8 +214,24 @@ fn pay_ok(w: &mut World, idx: usize, amount: u64, p: usize) -> Utxo {
     }
 }
 
-fn pay_refused(w: &mut World, data: &StealthSecretTransferData, signer: &RistrettoSecretKey, expected: &str) {
-    let tx = pay_tx(w, data, signer);
+#[derive(Clone, Copy)]
+enum Who {
+    Agent,
+    Owner,
+    Stranger,
+}
+
+fn secret(w: &World, who: Who) -> RistrettoSecretKey {
+    match who {
+        Who::Agent => w.agent.sk.clone(),
+        Who::Owner => w.owner.sk.clone(),
+        Who::Stranger => w.stranger.sk.clone(),
+    }
+}
+
+fn pay_refused(w: &mut World, data: &StealthSecretTransferData, who: Who, expected: &str) {
+    let signer = secret(w, who);
+    let tx = pay_tx(w, data, &signer);
     let reason = w.test.execute_expect_failure(tx, vec![]);
     assert_reject_reason(&reason, expected);
 }
@@ -265,7 +281,7 @@ fn window_limit_refuses_with_numbers_then_reopens_next_window() {
     pay_refused(
         &mut w,
         &data,
-        &w.agent.sk.clone(),
+        Who::Agent,
         "familiar: window limit exceeded: 80 of 100 spent, 20 left, payment of 30 refused",
     );
     // what is left in the window still goes through
@@ -282,7 +298,7 @@ fn window_limit_refuses_with_numbers_then_reopens_next_window() {
 fn single_payment_over_the_covenant_allowance_is_refused() {
     let mut w = world();
     let data = pay_statement(&w, 0, MAX_PER_PAYMENT + 1, payee_auth(&w, 0), budget_auth(&w));
-    pay_refused(&mut w, &data, &w.agent.sk.clone(), "covenant not satisfied: BalancePreserved(40)");
+    pay_refused(&mut w, &data, Who::Agent, "covenant not satisfied: BalancePreserved(40)");
 }
 
 #[test]
@@ -328,14 +344,14 @@ fn payment_to_a_payee_not_on_the_leash_is_refused() {
     let mut w = world();
     let to = OutputAuthSpec::Conditions(vec![key_leaf(w.stranger.pk)]);
     let data = pay_statement(&w, 0, 10, to, budget_auth(&w));
-    pay_refused(&mut w, &data, &w.agent.sk.clone(), "familiar: output to a payee not on the leash");
+    pay_refused(&mut w, &data, Who::Agent, "familiar: output to a payee not on the leash");
 }
 
 #[test]
 fn payout_to_a_plain_key_is_refused() {
     let mut w = world();
     let data = pay_statement(&w, 0, 10, OutputAuthSpec::KeyPath(w.agent.pk), budget_auth(&w));
-    pay_refused(&mut w, &data, &w.agent.sk.clone(), "familiar: output to a payee not on the leash");
+    pay_refused(&mut w, &data, Who::Agent, "familiar: output to a payee not on the leash");
 }
 
 #[test]
@@ -346,7 +362,7 @@ fn change_with_an_added_key_path_is_refused() {
         conditions: w.leaves.clone(),
     };
     let data = pay_statement(&w, 0, 10, payee_auth(&w, 0), change);
-    pay_refused(&mut w, &data, &w.agent.sk.clone(), "familiar: output to a payee not on the leash");
+    pay_refused(&mut w, &data, Who::Agent, "familiar: output to a payee not on the leash");
 }
 
 #[test]
@@ -359,15 +375,15 @@ fn revealed_output_is_refused() {
         [(value - 15, budget_auth(&w)), (10, payee_auth(&w, 0))],
         5u64,
     );
-    pay_refused(&mut w, &data, &w.agent.sk.clone(), "familiar: revealed outputs are not allowed");
+    pay_refused(&mut w, &data, Who::Agent, "familiar: revealed outputs are not allowed");
 }
 
 #[test]
 fn only_the_agent_key_can_pay() {
     let mut w = world();
     let data = pay_statement(&w, 0, 10, payee_auth(&w, 0), budget_auth(&w));
-    pay_refused(&mut w, &data, &w.stranger.sk.clone(), "Access Denied");
-    pay_refused(&mut w, &data, &w.owner.sk.clone(), "Access Denied");
+    pay_refused(&mut w, &data, Who::Stranger, "Access Denied");
+    pay_refused(&mut w, &data, Who::Owner, "Access Denied");
 }
 
 #[test]
@@ -376,7 +392,7 @@ fn paused_leash_refuses_until_resumed() {
     let tx = tx_method(&w, w.leash, "pause", args![], &w.owner.sk.clone());
     w.test.execute_expect_success(tx, vec![]);
     let data = pay_statement(&w, 0, 10, payee_auth(&w, 0), budget_auth(&w));
-    pay_refused(&mut w, &data, &w.agent.sk.clone(), "familiar: leash is paused by the owner");
+    pay_refused(&mut w, &data, Who::Agent, "familiar: leash is paused by the owner");
     let tx = tx_method(&w, w.leash, "resume", args![], &w.owner.sk.clone());
     w.test.execute_expect_success(tx, vec![]);
     pay_ok(&mut w, 0, 10, 0);
@@ -403,7 +419,7 @@ fn owner_can_tighten_the_policy() {
     let tx = tx_method(&w, w.leash, "set_policy", args![15u64, WINDOW], &w.owner.sk.clone());
     w.test.execute_expect_success(tx, vec![]);
     let data = pay_statement(&w, 0, 16, payee_auth(&w, 0), budget_auth(&w));
-    pay_refused(&mut w, &data, &w.agent.sk.clone(), "familiar: window limit exceeded: 0 of 15 spent");
+    pay_refused(&mut w, &data, Who::Agent, "familiar: window limit exceeded: 0 of 15 spent");
 }
 
 #[test]
