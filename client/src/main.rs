@@ -53,7 +53,7 @@ type Prov = IndexerProvider<OotleWallet>;
 const EXPLORER: &str = "https://explorer.tari.mw/tx/";
 /// Fee revealed by each transaction's fee intent. A stealth-reveal fee keeps no change, so this is the price of a
 /// demo transaction, not an estimate; the publish fee is taken from a dry run instead.
-const FEE: u64 = 20_000;
+const FEE: u64 = 100_000;
 const LIMIT: u64 = TARI; // 1 tTARI per window
 const WINDOW_EPOCHS: u64 = 10_000;
 const MAX_PER_PAYMENT: u64 = 400_000; // 0.4 tTARI per single spend (native covenant)
