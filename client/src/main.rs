@@ -744,8 +744,26 @@ async fn main() -> Result<()> {
     owner.fee_coin = fund_coins[2].clone();
     let mut budget = vec![fund_coins[0].clone(), fund_coins[1].clone()];
 
-    // ---- 5. the agent pays allow-listed payees
     let payee_auth = |i: usize| SpendAuthorization::Script(payee_roots[i]);
+    // 5a. single spend over the native covenant cap (the window still has room, so only the covenant can refuse it)
+    let (st, _) = pay_statement(
+        &leaves,
+        &budget[1],
+        MAX_PER_PAYMENT + 10_000,
+        payee_auth(0),
+        budget_auth.clone(),
+    )?;
+    let tx = build_tx(&p, max_epoch, &agent, FEE, &[budget[1].address()], |b| {
+        b.add_input(leash).call_method(leash, "pay", args![st])
+    })?;
+    let sent = send_from(&mut p, &mut agent, tx).await?;
+    r.row(
+        "5a. try one spend over the per-spend cap",
+        &sent,
+        "refused by the covenant inside the UTXO",
+    );
+
+    // ---- 5. the agent pays allow-listed payees
     for (i, amount) in [(0usize, 400_000u64), (1, 400_000)] {
         let (st, new) = pay_statement(&leaves, &budget[0], amount, payee_auth(i), budget_auth.clone())?;
         let input = budget[0].address();
@@ -766,24 +784,6 @@ async fn main() -> Result<()> {
 
     // ---- 6. attacks, each refused on-chain
     r.section("**Try to break it** (each transaction was submitted; the refusal is the network's)");
-
-    // 6a. single spend over the native covenant cap
-    let (st, _) = pay_statement(
-        &leaves,
-        &budget[1],
-        MAX_PER_PAYMENT + 10_000,
-        payee_auth(0),
-        budget_auth.clone(),
-    )?;
-    let tx = build_tx(&p, max_epoch, &agent, FEE, &[budget[1].address()], |b| {
-        b.add_input(leash).call_method(leash, "pay", args![st])
-    })?;
-    let sent = send_from(&mut p, &mut agent, tx).await?;
-    r.row(
-        "6a. one spend over the per-spend cap",
-        &sent,
-        "refused by the covenant inside the UTXO",
-    );
 
     // 6b. over the window limit (0.8 of 1.0 already spent)
     let (st, _) = pay_statement(&leaves, &budget[0], 300_000, payee_auth(0), budget_auth.clone())?;
