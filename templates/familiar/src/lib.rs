@@ -77,7 +77,9 @@ mod familiar {
                     .method("set_budget_root", rule!(public_key(owner)))
                     .default(rule!(deny_all)),
             )
-            .with_owner_rule(OwnerRule::ByPublicKey(owner))
+            // No component owner: an owner would bypass the method rules above (it could call `pay`), and nobody needs
+            // to rewrite these rules. The owner key acts only through the owner-only methods and the recall leaf.
+            .with_owner_rule(OwnerRule::None)
             .create()
         }
 

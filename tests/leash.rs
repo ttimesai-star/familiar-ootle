@@ -379,10 +379,17 @@ fn revealed_output_is_refused() {
 }
 
 #[test]
-fn only_the_agent_key_can_pay() {
+fn a_stranger_cannot_pay() {
     let mut w = world();
     let data = pay_statement(&w, 0, 10, payee_auth(&w, 0), budget_auth(&w));
     pay_refused(&mut w, &data, Who::Stranger, "Access Denied");
+}
+
+/// The owner key is not the agent key: the leash has no component owner that could bypass the `pay` rule.
+#[test]
+fn the_owner_cannot_pay_as_the_agent() {
+    let mut w = world();
+    let data = pay_statement(&w, 0, 10, payee_auth(&w, 0), budget_auth(&w));
     pay_refused(&mut w, &data, Who::Owner, "Access Denied");
 }
 
