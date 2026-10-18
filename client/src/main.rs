@@ -336,13 +336,17 @@ fn pay_statement(
     Ok((st, new))
 }
 
-fn funder_from(network: Network, v: &str) -> Result<PrivateKeyProvider> {
+fn funder_secret(network: Network, v: &str) -> Result<OotleSecretKey> {
     let (a, b) = v
         .split_once(':')
         .context("FAMILIAR_FUNDER must be <account hex>:<view hex>")?;
     let account = RistrettoSecretKey::from_hex(a).map_err(|e| anyhow!("account secret: {e:?}"))?;
     let view = RistrettoSecretKey::from_hex(b).map_err(|e| anyhow!("view secret: {e:?}"))?;
-    Ok(PrivateKeyProvider::new(OotleSecretKey::new(network, account, view)))
+    Ok(OotleSecretKey::new(network, account, view))
+}
+
+fn funder_from(network: Network, v: &str) -> Result<PrivateKeyProvider> {
+    Ok(PrivateKeyProvider::new(funder_secret(network, v)?))
 }
 
 /// Writes a fresh testnet funder secret to `path` (never to stdout) and prints what is needed to fund it.
