@@ -693,7 +693,8 @@ async fn main() -> Result<()> {
     let budget_auth = SpendAuthorization::Script(budget_root);
 
     let tx = build_tx(&p, max_epoch, &owner, FEE, &[], |b| {
-        b.call_method(leash, "set_budget_root", args![budget_root])
+        b.add_input(leash)
+            .call_method(leash, "set_budget_root", args![budget_root])
     })?;
     let sent = send_from(&mut p, &mut owner, tx).await?;
     r.row("3b. set budget root (owner)", &sent, &format!("leash `{leash}`"));
@@ -749,7 +750,7 @@ async fn main() -> Result<()> {
         let (st, new) = pay_statement(&leaves, &budget[0], amount, payee_auth(i), budget_auth.clone())?;
         let input = budget[0].address();
         let tx = build_tx(&p, max_epoch, &agent, FEE, &[input], |b| {
-            b.call_method(leash, "pay", args![st])
+            b.add_input(leash).call_method(leash, "pay", args![st])
         })?;
         let sent = send_from(&mut p, &mut agent, tx).await?;
         r.row(
@@ -775,7 +776,7 @@ async fn main() -> Result<()> {
         budget_auth.clone(),
     )?;
     let tx = build_tx(&p, max_epoch, &agent, FEE, &[budget[1].address()], |b| {
-        b.call_method(leash, "pay", args![st])
+        b.add_input(leash).call_method(leash, "pay", args![st])
     })?;
     let sent = send_from(&mut p, &mut agent, tx).await?;
     r.row(
@@ -787,7 +788,7 @@ async fn main() -> Result<()> {
     // 6b. over the window limit (0.8 of 1.0 already spent)
     let (st, _) = pay_statement(&leaves, &budget[0], 300_000, payee_auth(0), budget_auth.clone())?;
     let tx = build_tx(&p, max_epoch, &agent, FEE, &[budget[0].address()], |b| {
-        b.call_method(leash, "pay", args![st])
+        b.add_input(leash).call_method(leash, "pay", args![st])
     })?;
     let sent = send_from(&mut p, &mut agent, tx).await?;
     r.row("6b. over the window limit", &sent, "refused by the leash component");
@@ -801,7 +802,7 @@ async fn main() -> Result<()> {
         budget_auth.clone(),
     )?;
     let tx = build_tx(&p, max_epoch, &agent, FEE, &[budget[0].address()], |b| {
-        b.call_method(leash, "pay", args![st])
+        b.add_input(leash).call_method(leash, "pay", args![st])
     })?;
     let sent = send_from(&mut p, &mut agent, tx).await?;
     r.row(
@@ -831,7 +832,7 @@ async fn main() -> Result<()> {
     // 6e. a stranger calls pay with a well-formed statement
     let (st, _) = pay_statement(&leaves, &budget[0], 100_000, payee_auth(0), budget_auth.clone())?;
     let tx = build_tx(&p, max_epoch, &stranger, FEE, &[budget[0].address()], |b| {
-        b.call_method(leash, "pay", args![st])
+        b.add_input(leash).call_method(leash, "pay", args![st])
     })?;
     let sent = send_from(&mut p, &mut stranger, tx).await?;
     r.row(
@@ -844,7 +845,7 @@ async fn main() -> Result<()> {
     r.section("**After the attacks**");
     let (st, new) = pay_statement(&leaves, &budget[0], 200_000, payee_auth(1), budget_auth.clone())?;
     let tx = build_tx(&p, max_epoch, &agent, FEE, &[budget[0].address()], |b| {
-        b.call_method(leash, "pay", args![st])
+        b.add_input(leash).call_method(leash, "pay", args![st])
     })?;
     let sent = send_from(&mut p, &mut agent, tx).await?;
     r.row(
