@@ -43,6 +43,24 @@ payments to one payee share a root and can be linked; the agent's transaction fe
 is not itself stealth-funded; the per-window rule is public. The leash bounds the damage of a compromised agent, it
 does not make the agent anonymous.
 
+## Live on the Esmeralda testnet
+
+The whole story ran on Esmeralda on 18 October 2026, every step a real transaction:
+[`docs/esmeralda_run.md`](docs/esmeralda_run.md) (links to the explorer). In short: the template was published, a
+leash created, its budget funded as two hidden UTXOs, the agent paid two allow-listed payees, then five attacks were
+submitted and each was refused on-chain by the mechanism that should refuse it:
+
+| Attack | Refused by | Engine message |
+|---|---|---|
+| one spend over the per-spend cap | the covenant in the UTXO | `covenant not satisfied: BalancePreserved(400000)` |
+| over the window limit | the leash component | `familiar: window limit exceeded: 800000 of 1000000 spent, 200000 left, payment of 300000 refused` |
+| pay itself instead of a payee | the leash component | `familiar: output to a payee not on the leash` |
+| spend the budget outside the leash | the engine | `No active call frame` |
+| a stranger calls `pay` | the engine | `Access Denied: call component method 'pay' ...` |
+
+Then the agent paid what was left of the window and the owner recalled the rest through the recall leaf, which had
+not been visible on-chain until that moment. Reproduce: `client/` (`familiar scenario`), see `.github/workflows/`.
+
 ## How it works
 
 Every budget UTXO commits a pure condition tree (`Script(root)`, no key path) with two leaves:
