@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  template:
+    name: template wasm + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            templates/familiar -> target
+      - name: build template (release wasm)
+        working-directory: templates/familiar
+        run: cargo build --release --target wasm32-unknown-unknown
+      - name: wasm size
+        run: ls -l templates/familiar/target/wasm32-unknown-unknown/release/*.wasm
+      - name: clippy (wasm)
+        working-directory: templates/familiar
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+
+  engine-tests:
+    name: engine tests (in-process Ootle engine)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          cache-directories: |
+            templates/familiar/target
+            templates/test_faucet/target
+      - name: free disk
+        run: df -h /
+      - name: cargo test
+        run: /usr/bin/time -v cargo test --tests -- --nocapture --test-threads=2 2>&1 | tee test.log
+      - name: upload Cargo.lock and log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lock-and-log
+          path: |
+            Cargo.lock
+            test.log
