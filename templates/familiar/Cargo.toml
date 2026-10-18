@@ -9,6 +9,7 @@ description = "Familiar: a private, network-enforced allowance for AI agents on 
 
 [dependencies]
 tari_template_lib = "0.34"
+familiar_core = { path = "../../core" }
 
 [lib]
 crate-type = ["cdylib"]

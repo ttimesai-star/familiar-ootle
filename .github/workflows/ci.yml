@@ -54,10 +54,11 @@ jobs:
           cache-directories: |
             templates/familiar/target
             templates/test_faucet/target
+            templates/mallory/target
       - name: free disk
         run: df -h /
       - name: cargo test
-        run: /usr/bin/time -v cargo test --tests -- --nocapture --test-threads=2 2>&1 | tee test.log
+        run: /usr/bin/time -v cargo test --workspace --tests -- --nocapture --test-threads=2 2>&1 | tee test.log
       - name: upload Cargo.lock and log
         if: always()
         uses: actions/upload-artifact@v4

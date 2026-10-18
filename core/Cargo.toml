@@ -1,0 +1,9 @@
+[package]
+name = "familiar_core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Pure allowance logic for Familiar (window, limit). No engine, no I/O; shared by the template and its tests."
+
+[dependencies]

@@ -1,4 +1,5 @@
 [workspace]
+members = [".", "core"]
 exclude = ["templates"]
 
 [package]
@@ -12,5 +13,6 @@ description = "Engine tests for the Familiar template (run against the real Ootl
 [dependencies]
 
 [dev-dependencies]
+familiar_core = { path = "core" }
 tari_template_test_tooling = "0.46"
 tari_template_lib = "0.34"
