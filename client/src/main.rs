@@ -170,7 +170,7 @@ fn build_tx(
         .add_input(TARI_TOKEN)
         .add_input(actor.fee_coin.address());
     for i in extra_inputs {
-        b = b.add_input(*i);
+        b = b.add_input(i.clone());
     }
     Ok(Tx {
         tx: b.finish().seal(&actor.keys.sk),
