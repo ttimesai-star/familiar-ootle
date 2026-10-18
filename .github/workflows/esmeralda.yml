@@ -33,6 +33,8 @@ jobs:
           ls -l familiar.min.wasm && sha256sum familiar.min.wasm | tee wasm.sha256
       - name: run scenario
         shell: bash
+        env:
+          FAMILIAR_FUNDER: ${{ secrets.FAMILIAR_FUNDER }}
         run: cargo run -p familiar-cli --release -- scenario familiar.min.wasm esmeralda_run.md 2>&1 | tee scenario.log
       - name: upload report
         if: always()

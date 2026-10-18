@@ -26,6 +26,7 @@ use ootle_rs::{
 use tari_crypto::{
     keys::{PublicKey as _, SecretKey as _},
     ristretto::{RistrettoPublicKey, RistrettoSecretKey},
+    tari_utilities::hex::Hex,
 };
 use tari_ootle_transaction::{Epoch, Transaction, TransactionBuilder, args};
 use tari_ootle_wallet_crypto::{
@@ -52,6 +53,8 @@ const LIMIT: u64 = TARI; // 1 tTARI per window
 const WINDOW_EPOCHS: u64 = 10_000;
 const MAX_PER_PAYMENT: u64 = 400_000; // 0.4 tTARI per single spend (native covenant)
 const BUDGET_UTXO: u64 = 2 * TARI;
+/// What one run needs in total: fee coins for agent (5), owner (23), stranger (1) and the funding fee (1).
+const FUND_TOTAL: u64 = 30 * TARI;
 
 #[derive(Clone)]
 struct Coin {
@@ -147,6 +150,7 @@ struct Actor {
 
 struct Tx {
     tx: Transaction,
+    dry: Transaction,
     fee_change: Coin,
 }
 
@@ -172,8 +176,10 @@ fn build_tx(
     for i in extra_inputs {
         b = b.add_input(i.clone());
     }
+    let unsigned = b.build_unsigned();
     Ok(Tx {
-        tx: b.finish().seal(&actor.keys.sk),
+        dry: unsigned.clone().with_dry_run(true).finish().seal(&actor.keys.sk),
+        tx: unsigned.finish().seal(&actor.keys.sk),
         fee_change,
     })
 }
@@ -238,8 +244,8 @@ fn reason_of(debug: &str) -> String {
 
 /// Dry-runs `tx` (to capture the engine's reason if it is refused), then submits it for real, so that even a refusal
 /// leaves a transaction on-chain (the fee intent commits, the rest is rejected).
-async fn send(p: &mut Prov, tx: Transaction) -> Result<Sent> {
-    let dry = match p.send_dry_run(tx.clone()).await {
+async fn send(p: &mut Prov, tx: Transaction, dry_tx: Transaction) -> Result<Sent> {
+    let dry = match p.send_dry_run(dry_tx).await {
         Ok(r) => format!("{:?}", r.finalize.result),
         Err(e) => format!("dry-run error: {e:?}"),
     };
@@ -283,7 +289,7 @@ async fn send(p: &mut Prov, tx: Transaction) -> Result<Sent> {
 
 /// Sends `tx` from `actor` and keeps the actor's fee coin in step with what the network did.
 async fn send_from(p: &mut Prov, actor: &mut Actor, tx: Tx) -> Result<Sent> {
-    let sent = send(p, tx.tx).await?;
+    let sent = send(p, tx.tx, tx.dry).await?;
     if sent.committed_fee {
         actor.fee_coin = tx.fee_change;
     }
@@ -323,6 +329,33 @@ fn pay_statement(
     Ok((st, new))
 }
 
+fn funder_from(network: Network, v: &str) -> Result<PrivateKeyProvider> {
+    let (a, b) = v
+        .split_once(':')
+        .context("FAMILIAR_FUNDER must be <account hex>:<view hex>")?;
+    let account = RistrettoSecretKey::from_hex(a).map_err(|e| anyhow!("account secret: {e:?}"))?;
+    let view = RistrettoSecretKey::from_hex(b).map_err(|e| anyhow!("view secret: {e:?}"))?;
+    Ok(PrivateKeyProvider::new(OotleSecretKey::new(network, account, view)))
+}
+
+/// Writes a fresh testnet funder secret to `path` (never to stdout) and prints what is needed to fund it.
+fn keygen(network: Network, path: &str) -> Result<()> {
+    let secret = OotleSecretKey::random(network);
+    let line = format!(
+        "{}:{}",
+        secret.account_secret().to_hex(),
+        secret.view_only_secret().to_hex()
+    );
+    std::fs::write(path, line).context("write secret file")?;
+    let address = secret.to_address();
+    let account_pk = RistrettoPublicKey::from_secret_key(secret.account_secret());
+    println!("address:            {address}");
+    println!("account public key: {}", account_pk.to_hex());
+    println!("account component:  {}", address.to_account_address());
+    println!("secret written to {path} (testnet only; keep it out of the repository)");
+    Ok(())
+}
+
 fn fail_report(path: &str, r: &Report, why: String) -> Result<()> {
     std::fs::write(path, &r.md)?;
     bail!(why)
@@ -331,14 +364,22 @@ fn fail_report(path: &str, r: &Report, why: String) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    let network = Network::Esmeralda;
+    if args.len() == 3 && args[1] == "keygen" {
+        return keygen(network, &args[2]);
+    }
     if args.len() != 4 || args[1] != "scenario" {
-        bail!("usage: familiar scenario <template.wasm> <report.md>");
+        bail!("usage: familiar keygen <secret-file> | familiar scenario <template.wasm> <report.md>");
     }
     let wasm = std::fs::read(&args[2]).context("read wasm")?;
     let report_path = args[3].as_str();
 
-    let network = Network::Esmeralda;
-    let funder = PrivateKeyProvider::random(network);
+    // FAMILIAR_FUNDER="<account secret hex>:<view secret hex>" selects a persistent testnet funder whose account was
+    // topped up beforehand; without it the run tries the shared faucet.
+    let (funder, funded_account) = match std::env::var("FAMILIAR_FUNDER") {
+        Ok(v) if !v.trim().is_empty() => (funder_from(network, v.trim())?, true),
+        _ => (PrivateKeyProvider::random(network), false),
+    };
     let wallet = OotleWallet::from(funder);
     let mut p: Prov = ProviderBuilder::new()
         .wallet(wallet)
@@ -364,30 +405,52 @@ async fn main() -> Result<()> {
     let payees = [new_keys(), new_keys()];
     let funder_pk = *p.default_signer_address().account_public_key();
     let outs = vec![
-        output(20 * TARI, SpendAuthorization::Key(agent_keys.pk))?,
-        output(178 * TARI, SpendAuthorization::Key(owner_keys.pk))?,
+        output(5 * TARI, SpendAuthorization::Key(agent_keys.pk))?,
+        output(23 * TARI, SpendAuthorization::Key(owner_keys.pk))?,
         output(TARI, SpendAuthorization::Key(stranger_keys.pk))?,
     ];
     let st = statement(
         vec![],
-        200 * TARI,
+        FUND_TOTAL,
         &outs,
         Some(RevealedOutput::new(Amount::from(TARI), funder_pk)),
     )?;
     let fee_coins = coins(&st, &outs);
-    let unsigned = IFaucet::new(&p, max_epoch)
-        .take_faucet_funds()
-        .into_stealth_transfer(st)
-        .and_pay_fee_from_revealed_output()
-        .prepare()
+    let unsigned = if funded_account {
+        // A persistent testnet funder: its account was topped up beforehand (the shared faucet can run dry).
+        let account = p.default_signer_address().to_account_address();
+        Transaction::builder(p.network(), max_epoch)
+            .with_fee_instructions_builder(|f| {
+                f.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(FUND_TOTAL)])
+                    .put_last_instruction_output_on_workspace("funds")
+                    .stealth_transfer_with_input_bucket(TARI_TOKEN, st, "funds")
+                    .put_last_instruction_output_on_workspace("fees")
+                    .pay_fee_from_bucket("fees")
+            })
+            .with_auto_fill_inputs()
+            .add_input(TARI_TOKEN)
+            .add_input(account)
+            .build_unsigned()
+    } else {
+        IFaucet::new(&p, max_epoch)
+            .take_faucet_funds()
+            .into_stealth_transfer(st)
+            .and_pay_fee_from_revealed_output()
+            .prepare()
+            .await
+            .context("faucet prepare")?
+    };
+    let dry = TransactionRequest::default()
+        .with_transaction(unsigned.clone().with_dry_run(true))
+        .build(p.wallet())
         .await
-        .context("faucet prepare")?;
+        .context("faucet sign (dry run)")?;
     let tx = TransactionRequest::default()
         .with_transaction(unsigned)
         .build(p.wallet())
         .await
         .context("faucet sign")?;
-    let sent = send(&mut p, tx).await?;
+    let sent = send(&mut p, tx, dry).await?;
     r.row(
         "1. faucet to one-time fee coins",
         &sent,
@@ -413,7 +476,7 @@ async fn main() -> Result<()> {
     let probe = build_tx(&p, max_epoch, &owner, 50 * TARI, &[], |b| {
         b.publish_template(wasm.clone())
     })?;
-    let dry = p.send_dry_run(probe.tx).await.context("publish dry run")?;
+    let dry = p.send_dry_run(probe.dry).await.context("publish dry run")?;
     let required: u64 = format!("{}", dry.finalize.required_fees())
         .parse()
         .context("required fee")?;
@@ -499,9 +562,10 @@ async fn main() -> Result<()> {
         .with_auto_fill_inputs()
         .add_input(TARI_TOKEN)
         .add_input(owner.fee_coin.address())
-        .finish()
-        .seal(&owner.keys.sk);
-    let sent = send(&mut p, tx).await?;
+        .build_unsigned();
+    let dry = tx.clone().with_dry_run(true).finish().seal(&owner.keys.sk);
+    let tx = tx.finish().seal(&owner.keys.sk);
+    let sent = send(&mut p, tx, dry).await?;
     r.row(
         "4. fund budget (2 hidden UTXOs)",
         &sent,
