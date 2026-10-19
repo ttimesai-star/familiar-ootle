@@ -140,7 +140,13 @@ fn world() -> World {
         budget: vec![],
     };
     let root = root_of(&w.leaves);
-    let tx = tx_method(&w, w.leash, "set_budget_root", args![root], &w.owner.sk);
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_budget_root",
+        args![root, MAX_PER_PAYMENT],
+        &w.owner.sk,
+    );
     w.test.execute_expect_success(tx, vec![]);
     fund(&mut w, &[100, 100]);
     w
@@ -455,7 +461,10 @@ fn admin_methods_are_owner_only() {
         ("pause", args![]),
         ("set_policy", args![1_000_000u64, 1u64]),
         ("set_payees", args![vec![root_of(&[key_leaf(w.agent.pk)])]]),
-        ("set_budget_root", args![root_of(&[key_leaf(w.agent.pk)])]),
+        (
+            "set_budget_root",
+            args![root_of(&[key_leaf(w.agent.pk)]), MAX_PER_PAYMENT],
+        ),
     ] {
         let tx = tx_method(&w, w.leash, method, a, &w.agent.sk.clone());
         let reason = w.test.execute_expect_failure(tx, vec![]);
@@ -613,7 +622,13 @@ fn spend_across_two_budget_roots_is_capped_by_the_leash() {
 
     let new_recall = keys(&mut w.test, 6);
     let new_leaves = vec![errand(w.leash), key_leaf(new_recall.pk)];
-    let tx = tx_method(&w, w.leash, "set_budget_root", args![root_of(&new_leaves)], &w.owner.sk.clone());
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_budget_root",
+        args![root_of(&new_leaves), MAX_PER_PAYMENT],
+        &w.owner.sk.clone(),
+    );
     w.test.execute_expect_success(tx, vec![]);
     w.leaves = new_leaves.clone();
     fund(&mut w, &[MAX_PER_PAYMENT]);
@@ -722,7 +737,13 @@ fn zero_payment_is_refused() {
 fn set_payees_rejects_duplicates() {
     let mut w = world();
     let payee = root_of(&[key_leaf(w.payees[0].pk)]);
-    let tx = tx_method(&w, w.leash, "set_payees", args![vec![payee, payee]], &w.owner.sk.clone());
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_payees",
+        args![vec![payee, payee]],
+        &w.owner.sk.clone(),
+    );
     let reason = w.test.execute_expect_failure(tx, vec![]);
     assert_reject_reason(&reason, "familiar: duplicate payee");
 }

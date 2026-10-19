@@ -12,6 +12,11 @@
 //! This component adds what a stateless condition cannot: a limit per window of epochs, an allow-list of payees and a
 //! pause switch. `pay` refuses any spend that is not shaped like "leash UTXOs in, change back under the budget root,
 //! the rest to allow-listed payees, nothing revealed".
+//!
+//! The covenant counts per condition root: all inputs under one root are one partition with one claim. When the
+//! owner rotates the budget root, UTXOs under the old and the new root are two partitions, so a single spend could
+//! move `max_per_payment` from each. The component therefore also caps the total claimed outflow of a spend
+//! (found in review, see THREAT_MODEL.md).
 
 use familiar_core::{Policy, Window};
 use tari_template_lib::prelude::*;
@@ -31,6 +36,8 @@ mod familiar {
         window_start: u64,
         spent: u64,
         budget_root: Option<Hash32>,
+        /// The per-spend cap, the same number as in the errand leaf's `BalancePreserved`. Set with the budget root.
+        max_per_payment: u64,
         payees: Vec<Hash32>,
         payments: u64,
         paused: bool,
@@ -62,6 +69,7 @@ mod familiar {
                 window_start: Consensus::current_epoch(),
                 spent: 0,
                 budget_root: None,
+                max_per_payment: 0,
                 payees,
                 payments: 0,
                 paused: false,
@@ -133,6 +141,15 @@ mod familiar {
 
             let revealed = ResourceManager::get(self.resource).stealth_transfer(spend);
             assert!(revealed.is_none(), "familiar: unexpected revealed output");
+            // Checked after the transfer on purpose: the covenant in the UTXO is the first line, so a single
+            // over-cap spend is refused by the engine itself. This line only matters when the claims come from
+            // several partitions (UTXOs under an old and a new budget root): each is within its own cap, their sum
+            // is not.
+            assert!(
+                amount <= self.max_per_payment,
+                "familiar: payment of {amount} over the per-payment cap {cap}",
+                cap = self.max_per_payment
+            );
 
             self.window_start = window.start;
             self.spent = window.spent;
@@ -163,6 +180,7 @@ mod familiar {
             LeashStatus {
                 limit: self.limit,
                 window_epochs: self.window_epochs,
+                max_per_payment: self.max_per_payment,
                 window_start: seen.start,
                 spent_in_window: seen.spent,
                 remaining_in_window: self.limit.saturating_sub(seen.spent),
@@ -182,12 +200,29 @@ mod familiar {
             emit_event("Resumed", metadata!["paused" => "false"]);
         }
 
-        /// Changes the rule. The current window keeps what was already spent in it.
+        /// Changes the rule. The window restarts at this epoch and keeps what was already spent in the window seen
+        /// under the old rule, so a shorter window can never free what was spent (if `spent` is already over the new
+        /// `limit`, the agent waits for the next window). Before this fix the grid was re-aligned in place and a
+        /// shorter window could land on a past grid point, which reset `spent` (found in review).
         pub fn set_policy(&mut self, limit: u64, window_epochs: u64) {
             let policy = Policy { limit, window_epochs };
             if let Err(refusal) = policy.validate() {
                 panic!("{refusal}");
             }
+            let old = Policy {
+                limit: self.limit,
+                window_epochs: self.window_epochs,
+            };
+            let window = Window {
+                start: self.window_start,
+                spent: self.spent,
+            };
+            let window = match familiar_core::restart_window(&old, window, Consensus::current_epoch()) {
+                Ok(window) => window,
+                Err(refusal) => panic!("{refusal}"),
+            };
+            self.window_start = window.start;
+            self.spent = window.spent;
             self.limit = limit;
             self.window_epochs = window_epochs;
         }
@@ -201,16 +236,21 @@ mod familiar {
         }
 
         /// Sets the condition root the budget UTXOs are locked under (computed by the owner's client from the
-        /// errand and recall leaves).
-        pub fn set_budget_root(&mut self, root: Hash32) {
+        /// errand and recall leaves) and the per-spend cap written into the errand leaf. UTXOs under a previous root
+        /// stay spendable through `pay` (their change moves under the new root); the cap bounds the total outflow of a
+        /// spend whatever roots its inputs are under.
+        pub fn set_budget_root(&mut self, root: Hash32, max_per_payment: u64) {
             assert!(!self.payees.contains(&root), "familiar: budget root cannot be a payee");
+            assert!(max_per_payment > 0, "familiar: per-payment cap must be positive");
             self.budget_root = Some(root);
+            self.max_per_payment = max_per_payment;
         }
     }
 
     pub struct LeashStatus {
         pub limit: u64,
         pub window_epochs: u64,
+        pub max_per_payment: u64,
         pub window_start: u64,
         pub spent_in_window: u64,
         pub remaining_in_window: u64,

@@ -1,9 +1,9 @@
 //! Allowance arithmetic for Familiar.
 //!
 //! A leash lets its agent pay at most `limit` (in µT) per window of `window_epochs` epochs. Windows are aligned to the
-//! epoch the leash was created in: window `k` covers epochs `[origin + k * window_epochs, origin + (k + 1) *
-//! window_epochs)`. Everything here is pure and total: overflow, a zero payment, a clock that went backwards and a
-//! broken policy are refusals, never panics, so the template decides how to fail.
+//! epoch the leash was created in (or the rule was last changed): window `k` covers epochs `[origin + k *
+//! window_epochs, origin + (k + 1) * window_epochs)`. Everything here is pure and total: overflow, a zero payment, a
+//! clock that went backwards and a broken policy are refusals, never panics, so the template decides how to fail.
 
 use core::fmt;
 
@@ -97,6 +97,17 @@ pub fn charge(policy: &Policy, window: Window, now: u64, amount: u64) -> Result<
     })
 }
 
+/// The window to store when the rule changes at epoch `now`: what was spent in the window seen under the old rule
+/// carries over, and the new window starts at `now`. Found in review: changing `window_epochs` alone re-aligned the
+/// grid, and a shorter window could land on a past grid point and free what was already spent (CI run 39209529251).
+pub fn restart_window(old: &Policy, window: Window, now: u64) -> Result<Window, Refusal> {
+    let seen = current(old, window, now)?;
+    Ok(Window {
+        start: now,
+        spent: seen.spent,
+    })
+}
+
 /// What the agent may still pay in the window seen at `now`.
 pub fn remaining(policy: &Policy, window: Window, now: u64) -> Result<u64, Refusal> {
     let window = current(policy, window, now)?;
@@ -170,6 +181,33 @@ mod tests {
             window_epochs: 0,
         };
         assert_eq!(charge(&bad, W0, 50, 1).unwrap_err(), Refusal::InvalidPolicy);
+    }
+
+    #[test]
+    fn a_rule_change_restarts_the_window_and_keeps_what_was_spent() {
+        let w = charge(&P, W0, 51, 80).unwrap();
+        // shrink the window mid-way: the old grid would reopen at 56, the restarted window runs 55..58
+        let w = restart_window(&P, w, 55).unwrap();
+        assert_eq!(w, Window { start: 55, spent: 80 });
+        let shorter = Policy {
+            limit: 100,
+            window_epochs: 3,
+        };
+        assert_eq!(
+            charge(&shorter, w, 57, 30).unwrap_err(),
+            Refusal::WindowLimit {
+                spent: 80,
+                amount: 30,
+                limit: 100
+            }
+        );
+        assert_eq!(charge(&shorter, w, 58, 30).unwrap(), Window { start: 58, spent: 30 });
+        // a change after the old window ended starts clean
+        assert_eq!(restart_window(&P, w, 70).unwrap(), Window { start: 70, spent: 0 });
+        assert_eq!(
+            restart_window(&P, w, 54).unwrap_err(),
+            Refusal::ClockWentBack { now: 54, start: 55 }
+        );
     }
 
     #[test]

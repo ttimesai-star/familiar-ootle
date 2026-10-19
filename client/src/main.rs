@@ -694,10 +694,14 @@ async fn main() -> Result<()> {
 
     let tx = build_tx(&p, max_epoch, &owner, FEE, &[], |b| {
         b.add_input(leash)
-            .call_method(leash, "set_budget_root", args![budget_root])
+            .call_method(leash, "set_budget_root", args![budget_root, MAX_PER_PAYMENT])
     })?;
     let sent = send_from(&mut p, &mut owner, tx).await?;
-    r.row("3b. set budget root (owner)", &sent, &format!("leash `{leash}`"));
+    r.row(
+        "3b. set budget root + per-spend cap (owner)",
+        &sent,
+        &format!("leash `{leash}`; cap {MAX_PER_PAYMENT} uT, the same number as in the errand leaf"),
+    );
     if !sent.accepted {
         return fail_report(report_path, &r, format!("set_budget_root failed: {}", sent.reason));
     }
