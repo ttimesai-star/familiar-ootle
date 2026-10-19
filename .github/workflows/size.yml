@@ -1,0 +1,61 @@
+name: wasm-size
+
+# Manual: builds the template under several size profiles and reports the published (wasm-opt) size of each,
+# plus the largest functions (twiggy), so the release profile is chosen on numbers.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["wasm-size"]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            templates/familiar -> target
+      - name: binaryen + twiggy
+        shell: bash
+        run: |
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_119/binaryen-version_119-x86_64-linux.tar.gz | tar xz
+          cargo install twiggy --locked --quiet || true
+      - name: variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          OPT=./binaryen-version_119/bin/wasm-opt
+          FLAGS="--enable-bulk-memory --strip-debug --strip-producers --strip-target-features"
+          W=templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm
+          build() { (cd templates/familiar && cargo build --release --target wasm32-unknown-unknown --quiet); }
+          report() { printf '%-28s raw %8d  min %8d  (%.1f KiB)\n' "$1" "$(stat -c%s $W)" "$(stat -c%s $2)" "$(echo "$(stat -c%s $2)/1024" | bc -l)" | tee -a sizes.txt; }
+          : > sizes.txt
+          for lvl in s z; do
+            export CARGO_PROFILE_RELEASE_OPT_LEVEL=$lvl
+            build
+            $OPT -Oz $FLAGS $W -o v_$lvl.wasm; report "opt-level=$lvl -Oz" v_$lvl.wasm
+            $OPT -Oz --converge $FLAGS $W -o v_${lvl}_c.wasm; report "opt-level=$lvl -Oz --converge" v_${lvl}_c.wasm
+            $OPT -Oz --converge --strip-dwarf --vacuum --dce $FLAGS $W -o v_${lvl}_cv.wasm; report "opt-level=$lvl -Oz conv+vac" v_${lvl}_cv.wasm
+            cp $W raw_$lvl.wasm
+          done
+          for f in v_*.wasm; do sha256sum $f | tee -a sizes.txt; done
+          (twiggy top -n 40 raw_z.wasm || true) > twiggy_top.txt
+          (twiggy garbage raw_z.wasm || true) | head -40 > twiggy_garbage.txt
+          cat twiggy_top.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-size
+          path: |
+            sizes.txt
+            twiggy_top.txt
+            twiggy_garbage.txt
+            v_*.wasm
