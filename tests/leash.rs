@@ -588,7 +588,7 @@ fn pay_without_a_budget_root_is_refused() {
     assert_reject_reason(&reason, "familiar: budget root not set");
 }
 
-// ---------------------------------------------------------------- review findings (proof of concept on the old code)
+// ---------------------------------------------------------------- found in review (PoC on the old code: CI run 39209529251)
 
 /// A budget UTXO spent through the errand leaf of an explicit leaf set (used when the budget root was rotated).
 fn input_under(leaves: &[SpendCondition], u: &Utxo) -> InputSpec {
@@ -601,10 +601,11 @@ fn input_under(leaves: &[SpendCondition], u: &Utxo) -> InputSpec {
     )
 }
 
-/// POC: the covenant caps the outflow per condition root (partition). After the owner rotates the budget root, a
-/// single spend that takes one UTXO from the old root and one from the new root moves 2 x MAX_PER_PAYMENT.
+/// The covenant caps the outflow per condition root (one claim per root, not per UTXO). After the owner rotates the
+/// budget root, a spend that takes one UTXO from the old root and one from the new root carries two claims, each
+/// within its own cap; the leash must cap their sum. On the old code this moved 2 x MAX_PER_PAYMENT.
 #[test]
-fn poc_spend_across_two_budget_roots_moves_twice_the_cap() {
+fn spend_across_two_budget_roots_is_capped_by_the_leash() {
     let mut w = world();
     fund(&mut w, &[MAX_PER_PAYMENT]);
     let old_leaves = w.leaves.clone();
@@ -618,25 +619,110 @@ fn poc_spend_across_two_budget_roots_moves_twice_the_cap() {
     fund(&mut w, &[MAX_PER_PAYMENT]);
     let new = w.budget.last().unwrap().clone();
 
-    let data = stealth::generate_transfer_data(
+    let over = stealth::generate_transfer_data(
         [input_under(&old_leaves, &old), input_under(&new_leaves, &new)],
         0u64,
         [(2 * MAX_PER_PAYMENT, payee_auth(&w, 0))],
         0u64,
     );
-    println!("claims in the statement: {}", data.statement.covenant_claims.len());
-    let tx = pay_tx(&w, &data, &w.agent.sk.clone());
+    println!("claims in the statement: {}", over.statement.covenant_claims.len());
+    pay_refused(
+        &mut w,
+        &over,
+        Who::Agent,
+        "familiar: payment of 80 over the per-payment cap 40",
+    );
+
+    // Within the cap, UTXOs under both roots are spent together; the change moves under the current root.
+    let ok = stealth::generate_transfer_data(
+        [input_under(&old_leaves, &old), input_under(&new_leaves, &new)],
+        0u64,
+        [(MAX_PER_PAYMENT, budget_auth(&w)), (MAX_PER_PAYMENT, payee_auth(&w, 0))],
+        0u64,
+    );
+    let tx = pay_tx(&w, &ok, &w.agent.sk.clone());
     w.test.execute_expect_success(tx, vec![]);
 }
 
-/// POC: shrinking window_epochs mid-window re-aligns the grid and resets what was spent.
+/// Two UTXOs under the same root are one partition for the covenant: one claim and one cap for the whole spend,
+/// so the engine itself refuses it before the leash gets to count anything.
 #[test]
-fn poc_shrinking_the_window_frees_what_was_spent() {
+fn two_utxos_under_one_root_are_one_covenant_partition() {
+    let mut w = world();
+    let total = w.budget[0].value + w.budget[1].value;
+    let over = stealth::generate_transfer_data(
+        [budget_input(&w, 0, 0), budget_input(&w, 1, 0)],
+        0u64,
+        [
+            (total - 2 * MAX_PER_PAYMENT, budget_auth(&w)),
+            (2 * MAX_PER_PAYMENT, payee_auth(&w, 0)),
+        ],
+        0u64,
+    );
+    println!("claims in the statement: {}", over.statement.covenant_claims.len());
+    pay_refused(
+        &mut w,
+        &over,
+        Who::Agent,
+        "covenant not satisfied: BalancePreserved(40)",
+    );
+    let ok = stealth::generate_transfer_data(
+        [budget_input(&w, 0, 0), budget_input(&w, 1, 0)],
+        0u64,
+        [
+            (total - MAX_PER_PAYMENT, budget_auth(&w)),
+            (MAX_PER_PAYMENT, payee_auth(&w, 0)),
+        ],
+        0u64,
+    );
+    let tx = pay_tx(&w, &ok, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+/// Shrinking `window_epochs` mid-window used to re-align the grid onto a past point and free what was spent. Now the
+/// window restarts at the change and keeps its `spent`.
+#[test]
+fn shrinking_the_window_keeps_what_was_spent() {
     let mut w = world();
     pay_ok(&mut w, 0, 40, 0);
     pay_ok(&mut w, 1, 40, 1);
     set_epoch(&mut w.test, START_EPOCH + 5);
     let tx = tx_method(&w, w.leash, "set_policy", args![LIMIT, 3u64], &w.owner.sk.clone());
     w.test.execute_expect_success(tx, vec![]);
+    let data = pay_statement(&w, 0, 30, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: window limit exceeded: 80 of 100 spent, 20 left, payment of 30 refused",
+    );
+    // The new window runs from the change (epoch 105), not from the old grid (which would reopen at 106).
+    set_epoch(&mut w.test, START_EPOCH + 5 + 2);
+    let data = pay_statement(&w, 0, 30, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: window limit exceeded: 80 of 100 spent",
+    );
+    set_epoch(&mut w.test, START_EPOCH + 5 + 3);
     pay_ok(&mut w, 0, 30, 0);
+}
+
+// ---------------------------------------------------------------- more refusals (review: missing negative tests)
+
+#[test]
+fn zero_payment_is_refused() {
+    let mut w = world();
+    let data = pay_statement(&w, 0, 0, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(&mut w, &data, Who::Agent, "familiar: zero payment");
+}
+
+#[test]
+fn set_payees_rejects_duplicates() {
+    let mut w = world();
+    let payee = root_of(&[key_leaf(w.payees[0].pk)]);
+    let tx = tx_method(&w, w.leash, "set_payees", args![vec![payee, payee]], &w.owner.sk.clone());
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, "familiar: duplicate payee");
 }
