@@ -29,6 +29,9 @@ jobs:
         run: |
           curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_119/binaryen-version_119-x86_64-linux.tar.gz | tar xz
           cargo install twiggy --locked --quiet || true
+      - name: nightly toolchain (build-std variants)
+        shell: bash
+        run: rustup toolchain install nightly --profile minimal --component rust-src --target wasm32-unknown-unknown
       - name: variants
         shell: bash
         run: |
@@ -36,21 +39,28 @@ jobs:
           OPT=./binaryen-version_119/bin/wasm-opt
           FLAGS="--enable-bulk-memory --strip-debug --strip-producers --strip-target-features"
           W=templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm
-          build() { (cd templates/familiar && cargo build --release --target wasm32-unknown-unknown --quiet); }
-          report() { printf '%-28s raw %8d  min %8d  (%.1f KiB)\n' "$1" "$(stat -c%s $W)" "$(stat -c%s $2)" "$(echo "$(stat -c%s $2)/1024" | bc -l)" | tee -a sizes.txt; }
+          report() { printf '%-44s raw %8d  min %8d  (%.1f KiB)
+' "$1" "$(stat -c%s $W)" "$(stat -c%s $2)" "$(echo "$(stat -c%s $2)/1024" | bc -l)" | tee -a sizes.txt; }
           : > sizes.txt
-          for lvl in s z; do
-            export CARGO_PROFILE_RELEASE_OPT_LEVEL=$lvl
-            build
-            $OPT -Oz $FLAGS $W -o v_$lvl.wasm; report "opt-level=$lvl -Oz" v_$lvl.wasm
-            $OPT -Oz --converge $FLAGS $W -o v_${lvl}_c.wasm; report "opt-level=$lvl -Oz --converge" v_${lvl}_c.wasm
-            $OPT -Oz --converge --strip-dwarf --vacuum --dce $FLAGS $W -o v_${lvl}_cv.wasm; report "opt-level=$lvl -Oz conv+vac" v_${lvl}_cv.wasm
-            cp $W raw_$lvl.wasm
-          done
+          cd_build() { (cd templates/familiar && "$@"); }
+          # A: current profile, but keep names for twiggy
+          CARGO_PROFILE_RELEASE_STRIP=false cd_build cargo build --release --target wasm32-unknown-unknown --quiet
+          cp $W named.wasm
+          $OPT -Oz --converge $FLAGS $W -o v_a.wasm; report "A stable s (names kept for twiggy)" v_a.wasm
+          # B: nightly, std rebuilt for size (panic messages kept)
+          cd_build cargo +nightly build --release --target wasm32-unknown-unknown --quiet -Z build-std=std,panic_abort -Z build-std-features=optimize_for_size
+          $OPT -Oz --converge $FLAGS $W -o v_b.wasm; report "B nightly build-std optimize_for_size, s" v_b.wasm
+          # C: B + opt-level z
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z cd_build cargo +nightly build --release --target wasm32-unknown-unknown --quiet -Z build-std=std,panic_abort -Z build-std-features=optimize_for_size
+          $OPT -Oz --converge $FLAGS $W -o v_c.wasm; report "C nightly build-std optimize_for_size, z" v_c.wasm
+          # D: B + mvp-ish features off that the engine may not need
+          RUSTFLAGS="-C target-cpu=mvp -C target-feature=+bulk-memory,+mutable-globals,+sign-ext" cd_build cargo +nightly build --release --target wasm32-unknown-unknown --quiet -Z build-std=std,panic_abort -Z build-std-features=optimize_for_size
+          $OPT -Oz --converge $FLAGS $W -o v_d.wasm; report "D nightly build-std, s, target-cpu=mvp(+bulk)" v_d.wasm
           for f in v_*.wasm; do sha256sum $f | tee -a sizes.txt; done
-          (twiggy top -n 40 raw_z.wasm || true) > twiggy_top.txt
-          (twiggy garbage raw_z.wasm || true) | head -40 > twiggy_garbage.txt
-          cat twiggy_top.txt
+          (twiggy top -n 60 named.wasm || true) > twiggy_top.txt
+          (twiggy dominators -d 3 -r 80 named.wasm || true) > twiggy_dominators.txt
+          (twiggy garbage named.wasm || true) | head -40 > twiggy_garbage.txt
+          head -70 twiggy_top.txt
       - uses: actions/upload-artifact@v4
         with:
           name: wasm-size
@@ -58,4 +68,5 @@ jobs:
             sizes.txt
             twiggy_top.txt
             twiggy_garbage.txt
+            twiggy_dominators.txt
             v_*.wasm
