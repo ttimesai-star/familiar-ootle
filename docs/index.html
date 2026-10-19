@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Familiar: a private, network-enforced allowance for AI agents on Tari Ootle</title>
+<meta name="description" content="An AI agent's budget held in hidden stealth UTXOs; the Ootle engine enforces a per-payment cap, a per-window limit, a payee allow-list and owner recall. Testnet prototype.">
+<meta name="color-scheme" content="light dark">
+<style>
+:root {
+  --bg: #fbfbfa; --fg: #16181d; --muted: #59606d; --line: #dcdfe4; --card: #ffffff; --code: #f1f2f4;
+  --accent: #5b3fd1; --ok: #116b3a; --okbg: #e3f4ea; --no: #9b1c1c; --nobg: #fbe9e9;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0e1015; --fg: #e8eaee; --muted: #9aa2b1; --line: #2a2f3a; --card: #151821; --code: #1d212c;
+    --accent: #a48cff; --ok: #6fdc9a; --okbg: #14301f; --no: #ff9a9a; --nobg: #3a1717; }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 var(--sans); }
+main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; }
+h1 { font-size: clamp(28px, 5vw, 40px); line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+h2 { font-size: 22px; margin: 44px 0 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+h3 { font-size: 17px; margin: 24px 0 8px; }
+p, li { max-width: 76ch; }
+a { color: var(--accent); text-underline-offset: 2px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+code { font: 0.88em/1.4 var(--mono); background: var(--code); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+pre { background: var(--code); padding: 14px 16px; border-radius: 8px; overflow-x: auto; font: 13.5px/1.5 var(--mono); }
+pre code { background: none; padding: 0; }
+.lead { font-size: 19px; color: var(--muted); margin: 0 0 16px; }
+.status { display: inline-block; font: 13px/1.4 var(--mono); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; color: var(--muted); }
+nav.links { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 18px 0 0; }
+nav.links a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+.tw { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th { font-size: 13px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+td.reason code { background: var(--nobg); color: var(--no); }
+.ok { font: 12.5px/1.4 var(--mono); background: var(--okbg); color: var(--ok); padding: 2px 6px; border-radius: 4px; }
+a.raw { font-size: 12px; color: var(--muted); }
+.tx { white-space: nowrap; }
+.small { font-size: 14px; color: var(--muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.card { border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 14px 16px; }
+.card h3 { margin-top: 0; }
+.card ul { margin: 0; padding-left: 18px; }
+.flow { display: grid; grid-template-columns: 1fr 44px 1.25fr 44px 1fr; align-items: center; gap: 0; }
+.box { border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 12px 14px; font-size: 14.5px; }
+.box b { display: block; margin-bottom: 4px; }
+.box.leash { border-color: var(--accent); }
+.arrow { text-align: center; color: var(--muted); font: 20px var(--mono); }
+.utxo { margin-top: 16px; }
+.leaf { font: 13px/1.6 var(--mono); white-space: pre; overflow-x: auto; background: var(--code); padding: 10px 12px; border-radius: 6px; }
+video { width: 100%; max-width: 960px; border-radius: 8px; border: 1px solid var(--line); background: #000; }
+footer { margin-top: 48px; font-size: 14px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; }
+@media (max-width: 760px) {
+  .grid2 { grid-template-columns: 1fr; }
+  .flow { grid-template-columns: 1fr; }
+  .arrow { transform: rotate(90deg); height: 32px; line-height: 32px; }
+  th, td { padding: 8px 9px; }
+  table.tx-table thead { display: none; }
+  table.tx-table, table.tx-table tbody, table.tx-table tr, table.tx-table td { display: block; width: 100%; }
+  table.tx-table tr { border-bottom: 1px solid var(--line); padding: 6px 0; }
+  table.tx-table tr:last-child { border-bottom: 0; }
+  table.tx-table td { border: 0; padding: 3px 12px; display: grid; grid-template-columns: 92px 1fr; gap: 8px; }
+  table.tx-table td::before { content: attr(data-l); color: var(--muted); font-size: 12.5px; padding-top: 2px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; transition: none; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+<span class="status">prototype · unaudited · Esmeralda testnet only</span>
+<h1>Familiar</h1>
+<p class="lead">A private, network-enforced allowance for AI agents on Tari Ootle. The agent can spend, but only up to
+the limits the owner set, only to payees the owner listed, and the owner can take the budget back at any moment.
+The Ootle engine enforces this, not the agent's code and not a server.</p>
+<nav class="links" aria-label="Project links">
+<a href="https://github.com/ttimesai-star/familiar">Source code (MIT)</a>
+<a href="#esmeralda">Live testnet run</a>
+<a href="https://github.com/ttimesai-star/familiar/blob/main/THREAT_MODEL.md">Threat model</a>
+<a href="#run">Run it yourself</a>
+</nav>
+</header>
+
+<section aria-labelledby="why">
+<h2 id="why">The problem</h2>
+<p>The Ootle wallet daemon can already hand an AI agent an API key with scopes such as
+<code>TransactionSend_&lt;account&gt;</code>. A scope says <em>what</em> the agent may do, not <em>how much</em>: a key
+that may send may send the whole account. If the agent is prompt-injected, or its host is compromised, the limit is
+whatever the account holds. On a transparent chain the agent's wallet is also public: its balance, every service it
+pays and who funds it.</p>
+<p>Familiar moves the limits into the chain and keeps the money out of sight.</p>
+</section>
+
+<section aria-labelledby="enforces">
+<h2 id="enforces">What the network enforces</h2>
+<div class="tw"><table>
+<tr><th>Rule</th><th>Enforced by</th></tr>
+<tr><td>at most <code>max_per_payment</code> leaves the budget in one payment</td><td>native covenant <code>BalancePreserved(max_per_payment)</code> inside each budget UTXO's spend condition</td></tr>
+<tr><td>at most <code>limit</code> per window of <code>window_epochs</code> epochs</td><td>the leash component, charging the amount the covenant itself proves (<code>covenant_claims</code>), never an argument</td></tr>
+<tr><td>payments only to allow-listed payees</td><td>the leash component: every output must be locked under the budget root (change) or an allow-listed payee root</td></tr>
+<tr><td>the budget cannot be spent anywhere except through the leash</td><td>the spend condition requires <code>component(&lt;this leash&gt;)</code>; a plain transfer or another component is refused by the engine</td></tr>
+<tr><td>the owner can recall everything without the agent</td><td>a second leaf <code>public_key(&lt;owner one-time key&gt;)</code>, hidden on-chain until used</td></tr>
+</table></div>
+</section>
+
+<section aria-labelledby="how">
+<h2 id="how">How it works</h2>
+<div class="flow" role="img" aria-label="Agent calls pay on the leash component, which checks the spend and sends hidden outputs to allow-listed payees, with change back to the budget.">
+  <div class="box"><b>Agent</b>one-time key, assumed compromised. Builds a stealth spend and calls <code>pay(spend)</code>.</div>
+  <div class="arrow" aria-hidden="true">→</div>
+  <div class="box leash"><b>Leash component</b>
+    caller is the agent key · not paused · nothing revealed · every output under the budget root or an allow-listed
+    payee root · window limit on the covenant-proven amount · then executes the spend from its own frame</div>
+  <div class="arrow" aria-hidden="true">→</div>
+  <div class="box"><b>Outputs</b>payee: stealth output under an opaque root<br>change: back under the budget root</div>
+</div>
+<div class="grid2 utxo">
+  <div class="card"><h3>Every budget UTXO</h3>
+    <p class="small">Amount hidden by a Pedersen commitment. Locked under a pure condition tree
+    <code>Script(root)</code>, no key path:</p>
+    <p class="leaf">errand = component(&lt;leash&gt;)
+     AND BalancePreserved(max)
+recall = public_key(&lt;owner key&gt;)</p></div>
+  <div class="card"><h3>Owner</h3>
+    <ul><li>funds the budget from stealth UTXOs;</li>
+    <li>sets the rule, the payees and the budget root (owner key only);</li>
+    <li>pauses or resumes the leash;</li>
+    <li>recalls the budget through the recall leaf with a plain stealth transfer. The agent is left with nothing to
+    spend.</li></ul></div>
+</div>
+</section>
+
+<section aria-labelledby="esmeralda">
+<h2 id="esmeralda">Live on the Esmeralda testnet</h2>
+<p>Every step below is a real transaction, run on 18 October 2026 at epoch 12448 by the
+<code>familiar scenario</code> client in GitHub Actions. Policy: limit 1000000 uT per 10000 epochs, at most 400000 uT per single spend (native covenant). Keys were generated for the run
+and discarded. tTARI has no value. Each id links to the explorer; <em>json</em> is the indexer record.</p>
+
+<h3>Try to break it</h3>
+<p class="small">Each attack was submitted as a transaction. <code>FeeIntentCommit</code> means the network charged the
+fee and rejected the instructions. The reason text is what the network returned to the client.</p>
+<div class="tw"><table class="tx-table"><thead><tr><th>Attack</th><th>Transaction</th><th>Refused by</th><th>Reason returned by the network</th></tr></thead><tbody><tr><td data-l="Attack"><span>try one spend over the per-spend cap</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/8e99dc151577369c291ea950cf3c1483cfa24f65ab4578afe6c6d64dd40bbb8e" title="8e99dc151577369c291ea950cf3c1483cfa24f65ab4578afe6c6d64dd40bbb8e"><code>8e99dc151577…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/8e99dc151577369c291ea950cf3c1483cfa24f65ab4578afe6c6d64dd40bbb8e" title="indexer record (JSON)">json</a></span></td><td data-l="Refused by"><span>the covenant inside the UTXO</span></td><td data-l="Reason" class="reason"><span><code>Spend condition not met: covenant not satisfied: BalancePreserved(400000)</code></span></td></tr><tr><td data-l="Attack"><span>over the window limit</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/474668819ce4a201ef7bcf5aef9b188bea8a82e3e3b9d444188cdaa29b2b0ee7" title="474668819ce4a201ef7bcf5aef9b188bea8a82e3e3b9d444188cdaa29b2b0ee7"><code>474668819ce4…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/474668819ce4a201ef7bcf5aef9b188bea8a82e3e3b9d444188cdaa29b2b0ee7" title="indexer record (JSON)">json</a></span></td><td data-l="Refused by"><span>the leash component</span></td><td data-l="Reason" class="reason"><span><code>familiar: window limit exceeded: 800000 of 1000000 spent, 200000 left, payment of 300000 refused</code></span></td></tr><tr><td data-l="Attack"><span>pay itself instead of a payee</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/7da62ee4c2f1729b822f87096f2fd24fd25b0a71f62c83adc37e4a7216effd33" title="7da62ee4c2f1729b822f87096f2fd24fd25b0a71f62c83adc37e4a7216effd33"><code>7da62ee4c2f1…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/7da62ee4c2f1729b822f87096f2fd24fd25b0a71f62c83adc37e4a7216effd33" title="indexer record (JSON)">json</a></span></td><td data-l="Refused by"><span>the leash component</span></td><td data-l="Reason" class="reason"><span><code>familiar: output to a payee not on the leash</code></span></td></tr><tr><td data-l="Attack"><span>spend the budget outside the leash</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/6b594f16a6823127b5f1d84c3e66e3818eb77b3985751757ecfa4556d8e6380f" title="6b594f16a6823127b5f1d84c3e66e3818eb77b3985751757ecfa4556d8e6380f"><code>6b594f16a682…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/6b594f16a6823127b5f1d84c3e66e3818eb77b3985751757ecfa4556d8e6380f" title="indexer record (JSON)">json</a></span></td><td data-l="Refused by"><span>the engine</span></td><td data-l="Reason" class="reason"><span><code>No active call frame</code></span></td></tr><tr><td data-l="Attack"><span>a stranger calls pay</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/f4b423906561ffdeb3d86275ba6cde42630f1759374f7f1134499a896859ce17" title="f4b423906561ffdeb3d86275ba6cde42630f1759374f7f1134499a896859ce17"><code>f4b423906561…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/f4b423906561ffdeb3d86275ba6cde42630f1759374f7f1134499a896859ce17" title="indexer record (JSON)">json</a></span></td><td data-l="Refused by"><span>pay requires the agent&#x27;s one-time key</span></td><td data-l="Reason" class="reason"><span><code>Access Denied: call component method &#x27;pay&#x27; on component_8f87e8e2a7aa367e07f4cfaccf175633db030c2b92a76f855482a156de3b7b34</code></span></td></tr></tbody></table></div>
+<h3>Setup, payments and recall</h3>
+<div class="tw"><table class="tx-table"><thead><tr><th>Step</th><th>Transaction</th><th>Outcome</th><th>Note</th></tr></thead><tbody><tr><td data-l="Step"><span>faucet to one-time fee coins</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/ac0423ece728d8fcc414090b21a93c45e2b72ee6c48f6cad7b8a1734be23bedb" title="ac0423ece728d8fcc414090b21a93c45e2b72ee6c48f6cad7b8a1734be23bedb"><code>ac0423ece728…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/ac0423ece728d8fcc414090b21a93c45e2b72ee6c48f6cad7b8a1734be23bedb" title="indexer record (JSON)">json</a></span></td><td data-l="Outcome"><span><span class="ok">Commit</span></span></td><td data-l="Note"><span>agent, owner, stranger keys are fresh, not accounts</span></td></tr><tr><td data-l="Step"><span>publish template</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/86ef4df92a0d2c72d664e031495814cd213d6d8b032d55db64c7922bc1b2d814" title="86ef4df92a0d2c72d664e031495814cd213d6d8b032d55db64c7922bc1b2d814"><code>86ef4df92a0d…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/86ef4df92a0d2c72d664e031495814cd213d6d8b032d55db64c7922bc1b2d814" title="indexer record (JSON)">json</a></span></td><td data-l="Outcome"><span><span class="ok">Commit</span></span></td><td data-l="Note"><span>181160 bytes, fee 1807177 uT (dry run 1721120)</span></td></tr><tr><td data-l="Step"><span>create leash</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/2235be01aeb3f9b71b99bd0bf323b5cc6b54498f459e869f668cb89115cb3450" title="2235be01aeb3f9b71b99bd0bf323b5cc6b54498f459e869f668cb89115cb3450"><code>2235be01aeb3…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/2235be01aeb3f9b71b99bd0bf323b5cc6b54498f459e869f668cb89115cb3450" title="indexer record (JSON)">json</a></span></td><td data-l="Outcome"><span><span class="ok">Commit</span></span></td><td data-l="Note"><span>template <code>029b13158f34…</code>; two allow-listed payee roots</span></td></tr><tr><td data-l="Step"><span>set budget root (owner)</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/23e7daac37d3a9e58d7836fe7827aad9a66bbd9feab8aa35a220b4bc3dc1f0d8" title="23e7daac37d3a9e58d7836fe7827aad9a66bbd9feab8aa35a220b4bc3dc1f0d8"><code>23e7daac37d3…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/23e7daac37d3a9e58d7836fe7827aad9a66bbd9feab8aa35a220b4bc3dc1f0d8" title="indexer record (JSON)">json</a></span></td><td data-l="Outcome"><span><span class="ok">Commit</span></span></td><td data-l="Note"><span>leash <code>component_8f87e8e2a7aa…</code></span></td></tr><tr><td data-l="Step"><span>fund budget (2 hidden UTXOs)</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/43c1fa9e6770fe28bc7f13f8b2e403b7e427af70bae42db4a8321d74e46f5a38" title="43c1fa9e6770fe28bc7f13f8b2e403b7e427af70bae42db4a8321d74e46f5a38"><code>43c1fa9e6770…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/43c1fa9e6770fe28bc7f13f8b2e403b7e427af70bae42db4a8321d74e46f5a38" title="indexer record (JSON)">json</a></span></td><td data-l="Outcome"><span><span class="ok">Commit</span></span></td><td data-l="Note"><span>amounts are Pedersen commitments: the budget is not visible</span></td></tr><tr><td data-l="Step"><span>agent pays payee 1 400000 uT</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/559c35061258b7e3dc2f831d6966a86c14f4f2b1b3a58f251dbd0ae92a83864c" title="559c35061258b7e3dc2f831d6966a86c14f4f2b1b3a58f251dbd0ae92a83864c"><code>559c35061258…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/559c35061258b7e3dc2f831d6966a86c14f4f2b1b3a58f251dbd0ae92a83864c" title="indexer record (JSON)">json</a></span></td><td data-l="Outcome"><span><span class="ok">Commit</span></span></td><td data-l="Note"><span>the payee is a stealth output under an opaque root</span></td></tr><tr><td data-l="Step"><span>agent pays payee 2 400000 uT</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/54e3c7eee93e67aa6ede10fecaef091385628494014a69cf352ae5ec4f552913" title="54e3c7eee93e67aa6ede10fecaef091385628494014a69cf352ae5ec4f552913"><code>54e3c7eee93e…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/54e3c7eee93e67aa6ede10fecaef091385628494014a69cf352ae5ec4f552913" title="indexer record (JSON)">json</a></span></td><td data-l="Outcome"><span><span class="ok">Commit</span></span></td><td data-l="Note"><span>the payee is a stealth output under an opaque root</span></td></tr><tr><td data-l="Step"><span>agent pays the last 200 000 uT of the window</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/1fd07eaf2e4fb0783b707fb368db89de27dd64ce37b1472735d7cf7978f3fd00" title="1fd07eaf2e4fb0783b707fb368db89de27dd64ce37b1472735d7cf7978f3fd00"><code>1fd07eaf2e4f…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/1fd07eaf2e4fb0783b707fb368db89de27dd64ce37b1472735d7cf7978f3fd00" title="indexer record (JSON)">json</a></span></td><td data-l="Outcome"><span><span class="ok">Commit</span></span></td><td data-l="Note"><span>window: 1 000 000 of 1 000 000</span></td></tr><tr><td data-l="Step"><span>owner recalls the rest</span></td><td data-l="Transaction"><span class="tx"><a href="https://explorer.tari.mw/tx/2919381a52efda5e753da355bff1ca953988bf5eb505a312798feadd3e1d182f" title="2919381a52efda5e753da355bff1ca953988bf5eb505a312798feadd3e1d182f"><code>2919381a52ef…</code></a> <a class="raw" href="https://ootle-indexer-a.tari.com/transactions/2919381a52efda5e753da355bff1ca953988bf5eb505a312798feadd3e1d182f" title="indexer record (JSON)">json</a></span></td><td data-l="Outcome"><span><span class="ok">Commit</span></span></td><td data-l="Note"><span>the recall leaf was hidden until this moment</span></td></tr></tbody></table></div>
+<p class="small">Template <code>029b13158f34c34c18e331e7d7c0a43ac50ccbb99d6f9b62e9168fe7fb23686a</code><br>Leash <code>component_8f87e8e2a7aa367e07f4cfaccf175633db030c2b92a76f855482a156de3b7b34</code><br>
+Budget root <code>e153741efbfaf5a8a6da645599feb7a8e1b21e384d1d3268ca0a3c76559f3290</code></p>
+</section>
+
+<section aria-labelledby="privacy">
+<h2 id="privacy">What an observer sees</h2>
+<div class="grid2">
+<div class="card"><h3>Visible</h3><ul>
+<li>that a payment happened, its epoch and the leash component it went through;</li>
+<li>the amount of each payment (the covenant proves the exact outflow in clear);</li>
+<li>the window rule and how much of the current window is used;</li>
+<li>the payee's condition root (the same root for repeat payments to one payee).</li></ul></div>
+<div class="card"><h3>Hidden</h3><ul>
+<li>the budget and what is left of it;</li>
+<li>who the payee is behind its root;</li>
+<li>who the owner is (one-time key, stealth funding);</li>
+<li>that an owner recall path exists, until it is used.</li></ul></div>
+</div>
+<p><b>Honest limits.</b> Payment amounts are public. Repeat payments to one payee can be linked. The agent's fee coin
+can link its payments unless it is itself stealth-funded. The window rule is public. The leash bounds what a
+compromised agent can spend; it does not make the agent anonymous. Prototype, not audited.</p>
+</section>
+
+<section aria-labelledby="run">
+<h2 id="run">Run it yourself</h2>
+<p>Engine tests run the template on the same engine validators run (<code>tari_template_test_tooling</code> 0.46,
+<code>tari_template_lib</code> 0.34). Every refusal test asserts the exact reason. The test engine needs about 2 GB
+of RAM.</p>
+<pre><code>git clone https://github.com/ttimesai-star/familiar.git
+cd familiar
+
+# engine tests (template + window arithmetic)
+cargo test -p familiar-tests -p familiar_core
+
+# the template as published (wasm32, then wasm-opt)
+rustup target add wasm32-unknown-unknown
+(cd templates/familiar &amp;&amp; cargo build --release --target wasm32-unknown-unknown)
+wasm-opt -Oz --enable-bulk-memory --strip-debug --strip-producers --strip-target-features \
+  templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm -o familiar.min.wasm
+
+# the whole testnet story: publish, leash, fund, pay, five attacks, recall
+FAMILIAR_FUNDER=&lt;account-secret-hex&gt;:&lt;view-secret-hex&gt; \
+  cargo run -p familiar-cli --release -- scenario familiar.min.wasm esmeralda_run.md</code></pre>
+<p class="small">The funder is any Esmeralda account holding tTARI (<code>familiar keygen</code> creates one; fund it
+through the testnet faucet). The workflows in <code>.github/workflows/</code> run the same commands.</p>
+</section>
+
+<footer>
+<p>MIT licence. Written for the Tari Ootle October 2026 build contest ("Spooky Secrets"), starting 18 October 2026.
+Developed with AI coding agents; design decisions, review and submission by the author. Not affiliated with Tari
+Labs.</p>
+</footer>
+</main>
+</body>
+</html>
