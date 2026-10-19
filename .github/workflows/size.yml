@@ -39,8 +39,7 @@ jobs:
           OPT=./binaryen-version_119/bin/wasm-opt
           FLAGS="--enable-bulk-memory --strip-debug --strip-producers --strip-target-features"
           W=templates/familiar/target/wasm32-unknown-unknown/release/familiar.wasm
-          report() { printf '%-44s raw %8d  min %8d  (%.1f KiB)
-' "$1" "$(stat -c%s $W)" "$(stat -c%s $2)" "$(echo "$(stat -c%s $2)/1024" | bc -l)" | tee -a sizes.txt; }
+          report() { printf '%-44s raw %8d  min %8d  (%.1f KiB)\n' "$1" "$(stat -c%s $W)" "$(stat -c%s $2)" "$(echo "$(stat -c%s $2)/1024" | bc -l)" | tee -a sizes.txt; }
           : > sizes.txt
           cd_build() { (cd templates/familiar && "$@"); }
           # A: current profile, but keep names for twiggy
