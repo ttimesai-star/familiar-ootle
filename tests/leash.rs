@@ -587,3 +587,56 @@ fn pay_without_a_budget_root_is_refused() {
     let reason = w.test.execute_expect_failure(tx, vec![]);
     assert_reject_reason(&reason, "familiar: budget root not set");
 }
+
+// ---------------------------------------------------------------- review findings (proof of concept on the old code)
+
+/// A budget UTXO spent through the errand leaf of an explicit leaf set (used when the budget root was rotated).
+fn input_under(leaves: &[SpendCondition], u: &Utxo) -> InputSpec {
+    InputSpec::with_auth(
+        MaskAndValue {
+            mask: u.mask.clone(),
+            value: u.value,
+        },
+        InputAuthSpec::script_path(leaves.to_vec(), leaves[0].clone(), Bytes::default()),
+    )
+}
+
+/// POC: the covenant caps the outflow per condition root (partition). After the owner rotates the budget root, a
+/// single spend that takes one UTXO from the old root and one from the new root moves 2 x MAX_PER_PAYMENT.
+#[test]
+fn poc_spend_across_two_budget_roots_moves_twice_the_cap() {
+    let mut w = world();
+    fund(&mut w, &[MAX_PER_PAYMENT]);
+    let old_leaves = w.leaves.clone();
+    let old = w.budget.last().unwrap().clone();
+
+    let new_recall = keys(&mut w.test, 6);
+    let new_leaves = vec![errand(w.leash), key_leaf(new_recall.pk)];
+    let tx = tx_method(&w, w.leash, "set_budget_root", args![root_of(&new_leaves)], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    w.leaves = new_leaves.clone();
+    fund(&mut w, &[MAX_PER_PAYMENT]);
+    let new = w.budget.last().unwrap().clone();
+
+    let data = stealth::generate_transfer_data(
+        [input_under(&old_leaves, &old), input_under(&new_leaves, &new)],
+        0u64,
+        [(2 * MAX_PER_PAYMENT, payee_auth(&w, 0))],
+        0u64,
+    );
+    println!("claims in the statement: {}", data.statement.covenant_claims.len());
+    let tx = pay_tx(&w, &data, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+/// POC: shrinking window_epochs mid-window re-aligns the grid and resets what was spent.
+#[test]
+fn poc_shrinking_the_window_frees_what_was_spent() {
+    let mut w = world();
+    pay_ok(&mut w, 0, 40, 0);
+    pay_ok(&mut w, 1, 40, 1);
+    set_epoch(&mut w.test, START_EPOCH + 5);
+    let tx = tx_method(&w, w.leash, "set_policy", args![LIMIT, 3u64], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    pay_ok(&mut w, 0, 30, 0);
+}
