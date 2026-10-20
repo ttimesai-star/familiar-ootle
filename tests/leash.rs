@@ -729,8 +729,10 @@ fn shrinking_the_window_keeps_what_was_spent() {
 #[test]
 fn zero_payment_is_refused() {
     let mut w = world();
+    // A zero-value payee output is dropped by the stealth statement builder, so the template refuses the spend at
+    // the payee check, before the amount reaches `familiar_core::charge` (which also refuses zero, see core tests).
     let data = pay_statement(&w, 0, 0, payee_auth(&w, 0), budget_auth(&w));
-    pay_refused(&mut w, &data, Who::Agent, "familiar: zero payment");
+    pay_refused(&mut w, &data, Who::Agent, "familiar: no payee output");
 }
 
 #[test]
