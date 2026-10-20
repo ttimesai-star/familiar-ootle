@@ -27,6 +27,7 @@ template and submit any transaction.
 | Spend the budget with a plain stealth transfer, bypassing the leash | errand leaf requires `component(<leash>)` | Refused by the engine (`No active call frame`) | `spending_the_budget_with_a_plain_transfer_is_refused` |
 | Deploy a hostile component that spends the budget from its own frame | `component(<leash>)` names one component address | Refused: `Access Denied: native.stealth_utxo.spend` | `spending_the_budget_from_a_hostile_component_is_refused` |
 | Replay an accepted payment | the spent UTXOs no longer exist | Refused (substate not found) | `replaying_a_payment_is_refused` |
+| Spend UTXOs from an old and a new budget root in one spend (after a rotation) to move 2 x the per-spend cap | the leash sums the covenant claims and refuses above `max_per_payment` (found in review) | Refused: `familiar: payment of 80 over the per-payment cap 40` | `spend_across_two_budget_roots_is_capped_by_the_leash` |
 | Lie about the amount | the amount is read from `covenant_claims`, which the engine proves; an understated claim fails natively | covered by the engine's own covenant tests | - |
 | Change the rule, the payees, the budget root, or pause/resume | owner-only method rules | Refused: `Access Denied` | `admin_methods_are_owner_only` |
 | Use the recall leaf | `public_key(<owner>)` | Refused: `Access Denied: native.stealth_utxo.spend` | `stranger_cannot_use_the_recall_leaf` |
@@ -41,6 +42,7 @@ leash or recalls the budget. That is the bound the leash promises.
 | A stranger calls `pay` with a valid statement | `pay` requires the agent key as a signer | `a_stranger_cannot_pay` |
 | The owner key calls `pay` (bypassing the agent) | the component has no owner (`OwnerRule::None`); an owner would bypass method rules, found and fixed during development | `the_owner_cannot_pay_as_the_agent` |
 | The owner registers the budget root as a payee (self-dealing loop) | refused in `set_payees` and `set_budget_root` | `budget_root_cannot_be_a_payee` |
+| The owner shrinks the window mid-window, resetting what was spent (found in review) | `set_policy` restarts the window at the current epoch and carries `spent` over | `shrinking_the_window_keeps_what_was_spent` |
 | A leash without a budget root | `pay` refuses | `pay_without_a_budget_root_is_refused` |
 
 ## Privacy: what leaks

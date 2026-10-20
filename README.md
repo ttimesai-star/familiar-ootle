@@ -15,7 +15,7 @@ code and not by a server:
 | The network enforces | How |
 |---|---|
 | at most `limit` µT per window of `window_epochs` epochs | the `Familiar` component tracks the window and refuses the spend |
-| at most `max_per_payment` µT in a single spend | native covenant `BalancePreserved(max_per_payment)` in the UTXO's spend condition |
+| at most `max_per_payment` µT in a single spend | native covenant `BalancePreserved(max_per_payment)` in the UTXO's spend condition (per budget root), plus the leash's own cap on the sum of the covenant claims of a spend (covers a spend across an old and a new budget root) |
 | payments only to allow-listed payees | every output of a payment must be locked under the budget root (change) or an allow-listed payee root |
 | the budget cannot be spent anywhere except inside the leash | the errand leaf requires `component(<this leash>)`; a plain transfer or a hostile component is refused by the engine |
 | the owner can take everything back at any time, without the agent | a second leaf `public_key(<owner one-time key>)` |
@@ -74,7 +74,9 @@ recall = public_key(<owner one-time key>)
   every output under the budget root or an allow-listed payee root, at least one payee output. The amount charged
   to the window is the outflow the covenant itself proves (`covenant_claims`), never an argument. Then it executes
   the spend from inside its own frame, which is the only place the errand leaf can be satisfied.
-* `pause` / `resume` / `set_policy` / `set_payees` / `set_budget_root`: owner key only.
+* `pause` / `resume` / `set_policy` / `set_payees` / `set_budget_root(root, max_per_payment)`: owner key only.
+  `set_policy` restarts the window at the current epoch and carries over what was already spent, so changing the
+  rule mid-window cannot reset the budget.
 * `status`: public view of the rule and the current window (not the budget).
 * Recall: the owner spends the UTXOs through the recall leaf with a plain stealth transfer; the agent is left with
   nothing to spend.
@@ -90,7 +92,23 @@ recall = public_key(<owner one-time key>)
 * outside the leash: hostile component refused (`Access Denied: native.stealth_utxo.spend`), plain transfer refused;
 * shape: unlisted payee, plain-key payout, change with an added key path, revealed output: refused;
 * auth: only the agent pays; admin methods owner-only; pause/resume; recall by owner, not by a stranger;
-* construction: bad policy, empty or duplicate payees, agent key equal to owner key.
+* construction: bad policy, empty or duplicate payees, agent key equal to owner key;
+* found in review (see below): a spend across two budget roots is capped by the leash; shrinking the window keeps what
+  was spent; two UTXOs under one root are one covenant partition; zero payment refused; duplicate payees refused.
+
+### Found in review
+
+An external review (Jules, Gemini) of the 19.10 snapshot found two medium issues. Both were first reproduced as
+passing proof-of-concept tests on the engine (CI run 39209529251), then fixed with red-then-green tests:
+
+1. After a budget-root rotation, one spend could take UTXOs from the old and the new root; the covenant is checked
+   per root, so the spend could move `2 x max_per_payment`. Fix: the leash stores `max_per_payment` and refuses a
+   spend whose summed covenant claims exceed it (`spend_across_two_budget_roots_is_capped_by_the_leash`).
+2. `set_policy` with a shorter window in the middle of a window reset `spent` to zero. Fix: `restart_window`
+   starts a new window at the current epoch and keeps what was spent (`shrinking_the_window_keeps_what_was_spent`).
+
+Checked and not an issue: the client never prints secret values (`funder_secret` reads the env var, keygen writes
+the secret only to a file).
 
 `core/` holds the window arithmetic as a pure crate with a randomized property test (accepted payments never exceed
 the limit in any aligned window).
