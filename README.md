@@ -38,13 +38,16 @@ Two modes share these rules. *Amount mode* (`pay`) caps µT and publishes each p
 ## Try it: your own leash on Esmeralda (about 3 minutes)
 
 No Rust needed: take the `familiar` binary for your OS from release
-[`RELEASE_TAG`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/RELEASE_TAG), or build it with
+[`esmeralda-2026-10-21-recall-key`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21-recall-key), or build it with
 `cargo build -p familiar-cli --release`. The template and a tTARI tap are already on Esmeralda; the client knows their
 addresses.
 
 | File | sha256 |
 |---|---|
-SHA_ROWS
+| `familiar-linux-x86_64` | `254c33ee772f6ba090cd862fa6453c93fc2021fa7761272f4066c9783f8338c3` |
+| `familiar-windows-x86_64.exe` | `3d4e6147058f2904c4932e8c986685794b984a3357d75be6c2cf1f454a2ecf77` |
+| `familiar-macos-arm64` | not in this release yet: macOS runners were not available to the private repository on 21.10; until it is attached, build from source |
+| `familiar.min.wasm` (the template of run 39650330915) | `653ebb3f83cdcd38fd4b2f8175b7e266afa4fc00754162c7b2b088183cf886ca` |
 
 The binaries are not code-signed. Linux: `chmod +x familiar-linux-x86_64`. macOS (Apple silicon):
 `chmod +x familiar-macos-arm64 && xattr -d com.apple.quarantine familiar-macos-arm64` (otherwise Gatekeeper refuses to
@@ -73,7 +76,8 @@ transaction carries it. The workflow `try-it` walks this
 path from a fresh wallet on every dispatch and checks each decision; run
 [39653993749](https://github.com/ttimesai-star/familiar-ootle/actions/runs/39653993749): 129 s from a new wallet to a
 recalled leash (2 payments accepted, 4 refused with the expected reason, pause and recall accepted; the tap read
-before and after).
+before and after). By hand with the released Windows binary from a laptop (21.10): `tap-status`, `wallet` to `recall`
+in 106 s, every decision as above.
 
 ![Try it in a terminal: a fresh wallet to a recalled leash, from the log of a real try-it run](docs/try_it.gif)
 
@@ -108,7 +112,8 @@ one that got through it.
 4. **Use the prebuilt template.** Release [`esmeralda-2026-10-21`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21)
    has the template wasm of the previous run (amount mode only); release
    [`esmeralda-2026-10-21-coupons`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21-coupons)
-   has the exact `familiar.min.wasm` of the latest run and the client binaries; every CI run also uploads the wasm
+   the client before cycle 3, and [`esmeralda-2026-10-21-recall-key`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21-recall-key)
+   the exact `familiar.min.wasm` of the latest run and the current client binaries; every CI run also uploads the wasm
    (artifact `familiar-wasm`). sha256 of the latest run: `653ebb3f83cdcd38fd4b2f8175b7e266afa4fc00754162c7b2b088183cf886ca`.
 5. **Engine tests** (about 2 GB of RAM): `cargo test --workspace` (Rust stable, `wasm32-unknown-unknown` target).
 
@@ -255,7 +260,7 @@ for the range proofs of 11 outputs (seen on Esmeralda run 39582583854).
 * found in review (see below): a spend across two budget roots is capped by the leash; shrinking the window keeps what
   was spent; two UTXOs under one root are one covenant partition; zero payment refused; duplicate payees refused.
 
-`cargo test -p familiar-cli` (13 tests): the obedient agent's parser; that a whole "Try it" leash fits in one take
+`cargo test -p familiar-cli` (14 tests): the obedient agent's parser; that a whole "Try it" leash fits in one take
 from the tap even with the largest coupon; that the denomination is random in its range or the owner's `--coupon`,
 and that in the range the inbox asks for the same number of coupons; that a coupon statement reveals no amount;
 the tap's public state as the indexer returns it; `tests/tap.rs` covers the tap; `scripts/tests/test_familiar_mcp.py` the MCP server against a stub client.
