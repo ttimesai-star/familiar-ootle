@@ -46,7 +46,7 @@ addresses.
 |---|---|
 | `familiar-linux-x86_64` | `254c33ee772f6ba090cd862fa6453c93fc2021fa7761272f4066c9783f8338c3` |
 | `familiar-windows-x86_64.exe` | `3d4e6147058f2904c4932e8c986685794b984a3357d75be6c2cf1f454a2ecf77` |
-| `familiar-macos-arm64` | not in this release yet: macOS runners were not available to the private repository on 21.10; until it is attached, build from source |
+| `familiar-macos-arm64` | `2b8790c4a0d94c420dd8fea0b1f00fd1e2e3a9e3fce42885604c2f780c3ba8a4` (attached 22.10, cli-binaries run [39680478683](https://github.com/ttimesai-star/familiar-ootle/actions/runs/39680478683), main 955d41a: the same client, only a test-only attribute differs) |
 | `familiar.min.wasm` (the template of run 39650330915) | `653ebb3f83cdcd38fd4b2f8175b7e266afa4fc00754162c7b2b088183cf886ca` |
 
 The binaries are not code-signed. Linux: `chmod +x familiar-linux-x86_64`. macOS (Apple silicon):
