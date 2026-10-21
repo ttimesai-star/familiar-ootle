@@ -68,7 +68,10 @@ Every command prints the transaction, an explorer link and the network's decisio
 at most 4 coupons per payment and 6 per window, to `candle-shop` and `herb-shop`. `familiar leash` draws the coupon
 denomination at random (or `familiar leash me.json --coupon <uT>`, up to 140000) and keeps it, with the recall key,
 only in `me.json`: that file holds testnet secret keys, keep it out of any repository. The workflow `try-it` walks this
-path from a fresh wallet on every dispatch and checks each decision; run TRYIT_RUN.
+path from a fresh wallet on every dispatch and checks each decision; run
+[39653993749](https://github.com/ttimesai-star/familiar-ootle/actions/runs/39653993749): 129 s from a new wallet to a
+recalled leash (2 payments accepted, 4 refused with the expected reason, pause and recall accepted; the tap read
+before and after).
 
 ![Try it in a terminal: a fresh wallet to a recalled leash, from the log of a real try-it run](docs/try_it.gif)
 

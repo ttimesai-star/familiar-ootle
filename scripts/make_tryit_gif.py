@@ -129,6 +129,9 @@ def main() -> None:
         durations.append(260 if text.startswith("$") else 120)
         prev = t
     durations[-1] = 4000
+    # a terminal needs few colours: one shared 16-colour palette keeps the file small
+    pal = frames[-1].quantize(colors=16)
+    frames = [f.quantize(palette=pal, dither=Image.Dither.NONE) for f in frames]
     frames[0].save(a.out, save_all=True, append_images=frames[1:], duration=durations, loop=0, optimize=True)
     print(f"{len(frames)} frames, {sum(durations) / 1000:.0f} s, {lines[-1][0]:.0f} s real -> {a.out}")
 
