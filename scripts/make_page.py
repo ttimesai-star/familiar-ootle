@@ -119,7 +119,7 @@ footer { margin-top:48px; font-size:14px; color:var(--muted); border-top:1px sol
 /* capture mode for the video: the walk-through alone, larger */
 body.capture main { max-width:1240px; padding:28px 32px; } body.capture header, body.capture section:not(#walk-sec), body.capture footer { display:none; }
 body.capture #walk-sec h2, body.capture .controls, body.capture .dots, body.capture .links2, body.capture .walkintro { display:none; }
-body.capture .title { font-size:28px; } body.capture .obs ul { font-size:16px; } body.capture .reason { font-size:17px; }
+body.capture .title { font-size:28px; } body.capture .obs ul { font-size:14.5px; } body.capture .obs li { margin:1px 0; } body.capture .reason { font-size:17px; }
 body.capture .read { font-size:18px; } body.capture #walk-sec { border:0; }
 body.capture .capbar { display:flex; } .capbar { display:none; justify-content:space-between; font:15px var(--mono); color:var(--muted); margin-bottom:14px; }
 """

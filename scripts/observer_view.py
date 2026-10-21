@@ -337,7 +337,7 @@ def main():
             f"## Public state of {label} (`/substates/{short(addr, 26)}`, version {version})",
             "",
             "Component state on Ootle is public. Fields in order: resource, limit, window_epochs, window_start, "
-            "spent, budget_root, max_per_payment, payees, single_use_payees (leash 2 template), payments, paused.",
+            "spent, budget_root, max_per_payment, payees, single_use_payees, payments, paused.",
             "",
             "```",
             json.dumps(state)[:1500],
