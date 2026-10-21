@@ -1,0 +1,42 @@
+name: cli-binaries
+
+# Manual: builds the `familiar` client for Linux, Windows and macOS, so trying a leash needs no Rust toolchain.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bin: familiar
+            name: familiar-linux-x86_64
+          - os: windows-latest
+            bin: familiar.exe
+            name: familiar-windows-x86_64.exe
+          - os: macos-latest
+            bin: familiar
+            name: familiar-macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.os }}
+      - name: build
+        shell: bash
+        run: |
+          cargo build -p familiar-cli --release
+          cp "target/release/${{ matrix.bin }}" "${{ matrix.name }}"
+          ./${{ matrix.name }} 2>&1 | head -5 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}

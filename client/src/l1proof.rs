@@ -2,7 +2,10 @@
 //!
 //! Adapted from `claim_proof_from_l1` and `complete_burn_proof_to_contents` in tari-project/tari-ootle
 //! (`applications/tari_ootle_app_utilities/src/burn_claim_proof.rs`, `applications/tari_walletd/src/handlers/helpers.rs`,
-//! v0.46.1, BSD-3-Clause). That crate is not published, so the conversion lives here.
+//! v0.46.1). That crate is not published, so the conversion lives here.
+//!
+//! Portions Copyright 2023, 2026 The Tari Project. SPDX-License-Identifier: BSD-3-Clause.
+//! The BSD-3-Clause licence text and notice: THIRD_PARTY.md at the repository root.
 
 use anyhow::{Result, anyhow};
 use ootle_byte_type::ToByteType;

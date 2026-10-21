@@ -12,7 +12,7 @@ use tari_template_lib::types::{
     bytes::Bytes,
     crypto::{RistrettoPublicKeyBytes, UtxoTag},
     rule,
-    stealth::{AtomicCondition, Covenant, SpendAuthorization, SpendCondition},
+    stealth::{AtomicCondition, Covenant, SpendAuthorization, SpendCondition, StealthTransferStatement},
 };
 use tari_template_test_tooling::{
     TemplateTest,
@@ -940,4 +940,482 @@ fn pay_without_a_covenant_claim_is_refused() {
     let tx = tx_method(&w, w.leash, "pay", args![spend], &w.agent.sk.clone());
     let reason = w.test.execute_expect_failure(tx, vec![]);
     assert_reject_reason(&reason, "familiar: spend without a covenant claim");
+}
+
+// ---------------------------------------------------------------- coupon mode: no amount on-chain
+
+/// The denomination: known to the owner and the agent only, never written to the leash.
+const COUPON: u64 = 10;
+const COUPONS_PER_WINDOW: u64 = 4;
+const COUPONS_PER_PAYMENT: u64 = 2;
+
+struct Coupons {
+    leaves: Vec<SpendCondition>,
+    coins: Vec<Utxo>,
+}
+
+fn coupon_tree(leash: ComponentAddress, recall: RistrettoPublicKeyBytes) -> Vec<SpendCondition> {
+    vec![SpendCondition::access_rule(rule!(component(leash))), key_leaf(recall)]
+}
+
+fn errand_siblings(leaves: &[SpendCondition]) -> Vec<Hash32> {
+    let (witness, _) = script_path_witness(leaves, &leaves[0]).unwrap();
+    witness.as_script_path().unwrap().1.siblings.clone()
+}
+
+/// UTXOs of `values` under the tree `leaves`, minted by the test faucet (the masks are kept).
+fn mint_under(w: &mut World, leaves: &[SpendCondition], values: &[u64]) -> Vec<Utxo> {
+    let total: u64 = values.iter().sum();
+    let outputs: Vec<(u64, OutputAuthSpec)> = values
+        .iter()
+        .map(|v| (*v, OutputAuthSpec::Conditions(leaves.to_vec())))
+        .collect();
+    let data = stealth::generate_transfer_data(stealth::NO_INPUTS, total, outputs, 0u64);
+    let tx = tx_method(
+        w,
+        w.faucet,
+        "fund",
+        args![data.statement.clone()],
+        &w.test.secret_key().clone(),
+    );
+    w.test.execute_expect_success(tx, vec![]);
+    values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| Utxo {
+            mask: data.output_masks[i].clone(),
+            value: *v,
+        })
+        .collect()
+}
+
+/// The standard world plus coupon mode: `n` coupons of COUPON, at most COUPONS_PER_WINDOW per WINDOW epochs and
+/// COUPONS_PER_PAYMENT per payment.
+fn coupon_world(n: usize) -> (World, Coupons) {
+    let mut w = world();
+    let leaves = coupon_tree(w.leash, w.owner.pk);
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_coupons",
+        args![
+            root_of(&leaves),
+            errand_siblings(&leaves),
+            COUPONS_PER_WINDOW,
+            WINDOW,
+            COUPONS_PER_PAYMENT
+        ],
+        &w.owner.sk.clone(),
+    );
+    w.test.execute_expect_success(tx, vec![]);
+    let coins = mint_under(&mut w, &leaves, &vec![COUPON; n]);
+    (w, Coupons { leaves, coins })
+}
+
+/// A coupon spent through `leaf` without naming its root, so the wallet builds no covenant claim.
+fn coupon_input(c: &Coupons, idx: usize, leaf: usize) -> StealthInputWitness {
+    let (witness, _) = script_path_witness(&c.leaves, &c.leaves[leaf]).unwrap();
+    StealthInputWitness {
+        mask_and_value: MaskAndValue {
+            mask: c.coins[idx].mask.clone(),
+            value: c.coins[idx].value,
+        },
+        witness,
+        condition_root: None,
+    }
+}
+
+fn payee_root(w: &World, p: usize) -> Hash32 {
+    root_of(&[key_leaf(w.payees[p].pk)])
+}
+
+/// Coupons `idx` (all of their value) to payee `p`, as one output. `seed` keeps the output masks distinct per test step.
+fn coupon_spend(w: &mut World, c: &Coupons, idx: &[usize], p: usize, seed: u8) -> (StealthTransferStatement, Utxo) {
+    let value: u64 = idx.iter().map(|i| c.coins[*i].value).sum();
+    let to = SpendAuthorization::Script(payee_root(w, p));
+    let out = witness_output(w, seed, value, to);
+    let payout = Utxo {
+        mask: out.witness.mask.clone(),
+        value,
+    };
+    let inputs: Vec<StealthInputWitness> = idx.iter().map(|i| coupon_input(c, *i, 0)).collect();
+    let spend = create_transfer_statement(inputs, Amount::zero(), [out].iter(), None).unwrap();
+    (spend, payout)
+}
+
+fn pay_coupons_tx(w: &World, spend: &StealthTransferStatement, signer: &RistrettoSecretKey) -> Transaction {
+    tx_method(w, w.leash, "pay_coupons", args![spend.clone()], signer)
+}
+
+fn coupons_refused(w: &mut World, spend: &StealthTransferStatement, who: Who, expected: &str) {
+    let signer = secret(w, who);
+    let tx = pay_coupons_tx(w, spend, &signer);
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, expected);
+}
+
+#[test]
+fn coupons_pay_without_any_amount_on_chain_and_the_payee_can_spend_them() {
+    let (mut w, c) = coupon_world(4);
+    let (spend, payout) = coupon_spend(&mut w, &c, &[0, 1], 0, 50);
+    // Nothing in the statement says how much moves: no claim, no revealed amount in or out.
+    assert!(spend.covenant_claims.is_empty());
+    assert!(spend.inputs_statement.revealed_amount.is_zero());
+    assert!(spend.outputs_statement.revealed_output.is_none());
+    let tx = pay_coupons_tx(&w, &spend, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    assert_eq!(payout.value, 2 * COUPON);
+
+    // The payee controls what it was paid.
+    let spend = stealth::generate_transfer_data(
+        [InputSpec::with_auth(
+            MaskAndValue {
+                mask: payout.mask.clone(),
+                value: payout.value,
+            },
+            InputAuthSpec::single(key_leaf(w.payees[0].pk)),
+        )],
+        0u64,
+        [(payout.value, OutputAuthSpec::KeyPath(w.payees[0].pk))],
+        0u64,
+    );
+    let tx = w
+        .test
+        .transaction()
+        .stealth_transfer(w.resource, spend.statement)
+        .finish()
+        .seal(&w.payees[0].sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+
+    let tx = tx_method(&w, w.leash, "status", args![], &w.stranger.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn coupon_window_counts_coupons_then_reopens() {
+    let (mut w, c) = coupon_world(6);
+    for (step, pair) in [[0usize, 1], [2, 3]].iter().enumerate() {
+        let (spend, _) = coupon_spend(&mut w, &c, pair, step % 2, 50 + step as u8);
+        let tx = pay_coupons_tx(&w, &spend, &w.agent.sk.clone());
+        w.test.execute_expect_success(tx, vec![]);
+    }
+    let (spend, _) = coupon_spend(&mut w, &c, &[4], 0, 60);
+    coupons_refused(
+        &mut w,
+        &spend,
+        Who::Agent,
+        "familiar: window limit exceeded: 4 of 4 spent, 0 left, payment of 1 refused (coupons)",
+    );
+    set_epoch(&mut w.test, START_EPOCH + WINDOW);
+    let tx = pay_coupons_tx(&w, &spend, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn coupons_over_the_per_payment_cap_are_refused() {
+    let (mut w, c) = coupon_world(3);
+    let (spend, _) = coupon_spend(&mut w, &c, &[0, 1, 2], 0, 50);
+    coupons_refused(
+        &mut w,
+        &spend,
+        Who::Agent,
+        "familiar: 3 coupons in one payment, the cap is 2",
+    );
+}
+
+#[test]
+fn coupon_change_and_unlisted_payees_are_refused() {
+    let (mut w, c) = coupon_world(2);
+    // Change back under the coupon root would let two coupons merge into one bigger "coupon".
+    let coupon_root = root_of(&c.leaves);
+    let to = SpendAuthorization::Script(payee_root(&w, 0));
+    let outs = vec![
+        witness_output(&mut w, 50, 5, to),
+        witness_output(&mut w, 51, 5, SpendAuthorization::Script(coupon_root)),
+    ];
+    let spend = create_transfer_statement(vec![coupon_input(&c, 0, 0)], Amount::zero(), outs.iter(), None).unwrap();
+    coupons_refused(
+        &mut w,
+        &spend,
+        Who::Agent,
+        "familiar: a coupon payment goes to allow-listed payees only, no change",
+    );
+    // A payee that is not on the leash (the agent's own key).
+    let agent_pk = w.agent.pk;
+    let outs = vec![witness_output(&mut w, 52, COUPON, SpendAuthorization::Key(agent_pk))];
+    let spend = create_transfer_statement(vec![coupon_input(&c, 0, 0)], Amount::zero(), outs.iter(), None).unwrap();
+    coupons_refused(
+        &mut w,
+        &spend,
+        Who::Agent,
+        "familiar: a coupon payment goes to allow-listed payees only, no change",
+    );
+}
+
+#[test]
+fn a_budget_utxo_is_not_a_coupon() {
+    let (mut w, _c) = coupon_world(1);
+    let (value, to) = (w.budget[0].value, SpendAuthorization::Script(payee_root(&w, 0)));
+    let out = witness_output(&mut w, 50, value, to);
+    let spend = create_transfer_statement(vec![claimless_input(&w, 0, 0)], Amount::zero(), [out].iter(), None).unwrap();
+    coupons_refused(
+        &mut w,
+        &spend,
+        Who::Agent,
+        "familiar: input is not a coupon of this leash",
+    );
+}
+
+#[test]
+fn a_utxo_with_the_coupon_leaf_under_another_tree_is_not_a_coupon() {
+    // Anyone can lock a UTXO under a tree that contains `component(<leash>)`; it is not one of the owner's coupons.
+    let (mut w, _c) = coupon_world(1);
+    let foreign = Coupons {
+        leaves: coupon_tree(w.leash, w.stranger.pk),
+        coins: vec![],
+    };
+    let leaves = foreign.leaves.clone();
+    let coins = mint_under(&mut w, &leaves, &[1000]);
+    let foreign = Coupons { coins, ..foreign };
+    let (spend, _) = coupon_spend(&mut w, &foreign, &[0], 0, 50);
+    coupons_refused(
+        &mut w,
+        &spend,
+        Who::Agent,
+        "familiar: input is not a coupon of this leash",
+    );
+}
+
+#[test]
+fn coupons_cannot_be_moved_through_pay() {
+    // Found while adding coupon mode: `pay` counts only covenant claims, and a coupon has no covenant. Without the
+    // input check, a budget input paying 1 could carry coupons along and move their value uncounted.
+    let (mut w, c) = coupon_world(2);
+    let budget_root = root_of(&w.leaves);
+    let (witness, _) = script_path_witness(&w.leaves, &w.leaves[0]).unwrap();
+    let budget_in = StealthInputWitness::with_script_path(
+        MaskAndValue {
+            mask: w.budget[0].mask.clone(),
+            value: w.budget[0].value,
+        },
+        witness,
+        budget_root,
+    );
+    let change = w.budget[0].value - 1;
+    let to = SpendAuthorization::Script(payee_root(&w, 0));
+    let outs = vec![
+        witness_output(&mut w, 50, change, SpendAuthorization::Script(budget_root)),
+        witness_output(&mut w, 51, 1 + 2 * COUPON, to),
+    ];
+    let spend = create_transfer_statement(
+        vec![budget_in, coupon_input(&c, 0, 0), coupon_input(&c, 1, 0)],
+        Amount::zero(),
+        outs.iter(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(spend.covenant_claims.len(), 1);
+    let tx = tx_method(&w, w.leash, "pay", args![spend], &w.agent.sk.clone());
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(
+        &reason,
+        "familiar: pay spends budget UTXOs only, coupons go through pay_coupons",
+    );
+}
+
+#[test]
+fn a_coupon_spent_outside_the_leash_is_refused() {
+    let (mut w, c) = coupon_world(1);
+    let agent_pk = w.agent.pk;
+    let out = witness_output(&mut w, 50, COUPON, SpendAuthorization::Key(agent_pk));
+    let spend = create_transfer_statement(vec![coupon_input(&c, 0, 0)], Amount::zero(), [out].iter(), None).unwrap();
+    let tx = w
+        .test
+        .transaction()
+        .stealth_transfer(w.resource, spend)
+        .finish()
+        .seal(&w.agent.sk.clone());
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, "No active call frame");
+}
+
+#[test]
+fn a_coupon_payment_with_a_claim_is_refused() {
+    // Naming the root makes the wallet publish a claim, that is, the amount. The leash refuses it.
+    let (mut w, c) = coupon_world(1);
+    let (witness, coupon_root) = script_path_witness(&c.leaves, &c.leaves[0]).unwrap();
+    let input = StealthInputWitness::with_script_path(
+        MaskAndValue {
+            mask: c.coins[0].mask.clone(),
+            value: c.coins[0].value,
+        },
+        witness,
+        coupon_root,
+    );
+    let to = SpendAuthorization::Script(payee_root(&w, 0));
+    let out = witness_output(&mut w, 50, COUPON, to);
+    let spend = create_transfer_statement(vec![input], Amount::zero(), [out].iter(), None).unwrap();
+    assert!(!spend.covenant_claims.is_empty());
+    coupons_refused(
+        &mut w,
+        &spend,
+        Who::Agent,
+        "familiar: a coupon payment reveals no amount (covenant claim present)",
+    );
+}
+
+#[test]
+fn only_the_agent_pays_coupons_and_not_while_paused() {
+    let (mut w, c) = coupon_world(1);
+    let (spend, _) = coupon_spend(&mut w, &c, &[0], 0, 50);
+    coupons_refused(&mut w, &spend, Who::Stranger, "Access Denied");
+    coupons_refused(&mut w, &spend, Who::Owner, "Access Denied");
+    let tx = tx_method(&w, w.leash, "pause", args![], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    coupons_refused(&mut w, &spend, Who::Agent, "familiar: leash is paused by the owner");
+    let tx = tx_method(&w, w.leash, "resume", args![], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    let tx = pay_coupons_tx(&w, &spend, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn pay_coupons_before_set_coupons_is_refused() {
+    let mut w = world();
+    let leaves = coupon_tree(w.leash, w.owner.pk);
+    let coins = mint_under(&mut w, &leaves, &[COUPON]);
+    let c = Coupons { leaves, coins };
+    let (spend, _) = coupon_spend(&mut w, &c, &[0], 0, 50);
+    coupons_refused(&mut w, &spend, Who::Agent, "familiar: coupons not set");
+}
+
+#[test]
+fn set_coupons_is_owner_only_and_checks_its_roots() {
+    let mut w = world();
+    let leaves = coupon_tree(w.leash, w.owner.pk);
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_coupons",
+        args![
+            root_of(&leaves),
+            errand_siblings(&leaves),
+            COUPONS_PER_WINDOW,
+            WINDOW,
+            COUPONS_PER_PAYMENT
+        ],
+        &w.agent.sk.clone(),
+    );
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, "Access Denied");
+
+    for (root, expected) in [
+        (payee_root(&w, 0), "familiar: coupon root cannot be a payee"),
+        (root_of(&w.leaves), "familiar: coupon root cannot be the budget root"),
+    ] {
+        let tx = tx_method(
+            &w,
+            w.leash,
+            "set_coupons",
+            args![
+                root,
+                errand_siblings(&leaves),
+                COUPONS_PER_WINDOW,
+                WINDOW,
+                COUPONS_PER_PAYMENT
+            ],
+            &w.owner.sk.clone(),
+        );
+        let reason = w.test.execute_expect_failure(tx, vec![]);
+        assert_reject_reason(&reason, expected);
+    }
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_coupons",
+        args![
+            root_of(&leaves),
+            errand_siblings(&leaves),
+            0u64,
+            WINDOW,
+            COUPONS_PER_PAYMENT
+        ],
+        &w.owner.sk.clone(),
+    );
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, "familiar: invalid policy");
+}
+
+#[test]
+fn changing_the_coupon_rule_keeps_what_was_spent() {
+    let (mut w, c) = coupon_world(4);
+    let (spend, _) = coupon_spend(&mut w, &c, &[0, 1], 0, 50);
+    let tx = pay_coupons_tx(&w, &spend, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    // Shorter window, mid-window: the two coupons already spent still count.
+    set_epoch(&mut w.test, START_EPOCH + 3);
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_coupons",
+        args![
+            root_of(&c.leaves),
+            errand_siblings(&c.leaves),
+            3u64,
+            2u64,
+            COUPONS_PER_PAYMENT
+        ],
+        &w.owner.sk.clone(),
+    );
+    w.test.execute_expect_success(tx, vec![]);
+    let (spend, _) = coupon_spend(&mut w, &c, &[2, 3], 1, 51);
+    coupons_refused(
+        &mut w,
+        &spend,
+        Who::Agent,
+        "familiar: window limit exceeded: 2 of 3 spent, 1 left, payment of 2 refused (coupons)",
+    );
+}
+
+#[test]
+fn single_use_roots_work_with_coupons() {
+    let (mut w, c) = coupon_world(2);
+    let roots = vec![payee_root(&w, 0), payee_root(&w, 1)];
+    single_use(&mut w, roots);
+    let (spend, _) = coupon_spend(&mut w, &c, &[0], 0, 50);
+    let tx = pay_coupons_tx(&w, &spend, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    let (spend, _) = coupon_spend(&mut w, &c, &[1], 0, 51);
+    coupons_refused(
+        &mut w,
+        &spend,
+        Who::Agent,
+        "familiar: a coupon payment goes to allow-listed payees only, no change",
+    );
+}
+
+#[test]
+fn owner_recalls_coupons_without_revealing_how_many_were_left() {
+    let (mut w, c) = coupon_world(3);
+    let owner_pk = w.owner.pk;
+    let outs = vec![witness_output(
+        &mut w,
+        50,
+        3 * COUPON,
+        SpendAuthorization::Key(owner_pk),
+    )];
+    let inputs: Vec<StealthInputWitness> = (0..3).map(|i| coupon_input(&c, i, 1)).collect();
+    let recall = create_transfer_statement(inputs, Amount::zero(), outs.iter(), None).unwrap();
+    assert!(recall.covenant_claims.is_empty());
+    let tx = w
+        .test
+        .transaction()
+        .stealth_transfer(w.resource, recall)
+        .finish()
+        .seal(&w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    // The agent has nothing left to spend.
+    let (spend, _) = coupon_spend(&mut w, &c, &[0], 0, 51);
+    let tx = pay_coupons_tx(&w, &spend, &w.agent.sk.clone());
+    w.test.execute_expect_failure(tx, vec![]);
 }
