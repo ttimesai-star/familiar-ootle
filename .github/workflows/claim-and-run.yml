@@ -80,6 +80,17 @@ jobs:
         shell: bash
         run: |
           FAMILIAR_FUND_TOTAL=${{ inputs.fund_total }} ./target/release/familiar scenario familiar.min.wasm esmeralda_run.md 2>&1 | tee scenario.log
+      - name: observer view (public indexer only, no keys)
+        if: always()
+        shell: bash
+        run: |
+          pip install --quiet cbor2
+          if [ -f esmeralda_run.json ]; then python3 scripts/observer_view.py esmeralda_run.json observer_view.md observer_view.json; fi
+      - name: job summary
+        if: always()
+        shell: bash
+        run: |
+          { echo "Template wasm: \`$(cat wasm.sha256)\`"; echo; cat esmeralda_run.md 2>/dev/null; } >> "$GITHUB_STEP_SUMMARY"
       - name: upload report
         if: always()
         uses: actions/upload-artifact@v4
@@ -87,6 +98,10 @@ jobs:
           name: claim-and-run-report
           path: |
             esmeralda_run.md
+            esmeralda_run.json
+            observer_view.md
+            observer_view.json
+            familiar.min.wasm
             scenario.log
             claim.log
             wasm.sha256

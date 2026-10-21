@@ -8,11 +8,11 @@
 //! Each refusal test checks the exact reason, so a test cannot pass because something unrelated failed.
 
 use tari_template_lib::types::{
-    Amount, ComponentAddress, Hash32, ResourceAddress,
+    Amount, ComponentAddress, EncryptedData, Hash32, ResourceAddress,
     bytes::Bytes,
-    crypto::RistrettoPublicKeyBytes,
+    crypto::{RistrettoPublicKeyBytes, UtxoTag},
     rule,
-    stealth::{AtomicCondition, Covenant, SpendCondition},
+    stealth::{AtomicCondition, Covenant, SpendAuthorization, SpendCondition},
 };
 use tari_template_test_tooling::{
     TemplateTest,
@@ -25,7 +25,10 @@ use tari_template_test_tooling::{
         stealth::{self, StealthSecretTransferData},
     },
     transaction::{Transaction, args, builder::named_args::NamedArg},
-    wallet_crypto::{MaskAndValue, stealth::condition_root},
+    wallet_crypto::{
+        MaskAndValue, OutputWitness, StealthInputWitness, StealthOutputWitness,
+        stealth::{condition_root, create_transfer_statement, script_path_witness},
+    },
 };
 
 const LIMIT: u64 = 100;
@@ -140,7 +143,13 @@ fn world() -> World {
         budget: vec![],
     };
     let root = root_of(&w.leaves);
-    let tx = tx_method(&w, w.leash, "set_budget_root", args![root], &w.owner.sk);
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_budget_root",
+        args![root, MAX_PER_PAYMENT],
+        &w.owner.sk,
+    );
     w.test.execute_expect_success(tx, vec![]);
     fund(&mut w, &[100, 100]);
     w
@@ -455,7 +464,11 @@ fn admin_methods_are_owner_only() {
         ("pause", args![]),
         ("set_policy", args![1_000_000u64, 1u64]),
         ("set_payees", args![vec![root_of(&[key_leaf(w.agent.pk)])]]),
-        ("set_budget_root", args![root_of(&[key_leaf(w.agent.pk)])]),
+        (
+            "set_budget_root",
+            args![root_of(&[key_leaf(w.agent.pk)]), MAX_PER_PAYMENT],
+        ),
+        ("set_single_use_payees", args![true]),
     ] {
         let tx = tx_method(&w, w.leash, method, a, &w.agent.sk.clone());
         let reason = w.test.execute_expect_failure(tx, vec![]);
@@ -586,4 +599,315 @@ fn pay_without_a_budget_root_is_refused() {
     let tx = tx_method(&w, fresh, "pay", args![data.statement.clone()], &w.agent.sk.clone());
     let reason = w.test.execute_expect_failure(tx, vec![]);
     assert_reject_reason(&reason, "familiar: budget root not set");
+}
+
+// ---------------------------------------------------------------- found in review (PoC on the old code: CI run 39209529251)
+
+/// A budget UTXO spent through the errand leaf of an explicit leaf set (used when the budget root was rotated).
+fn input_under(leaves: &[SpendCondition], u: &Utxo) -> InputSpec {
+    InputSpec::with_auth(
+        MaskAndValue {
+            mask: u.mask.clone(),
+            value: u.value,
+        },
+        InputAuthSpec::script_path(leaves.to_vec(), leaves[0].clone(), Bytes::default()),
+    )
+}
+
+/// The covenant caps the outflow per condition root (one claim per root, not per UTXO). After the owner rotates the
+/// budget root, a spend that takes one UTXO from the old root and one from the new root carries two claims, each
+/// within its own cap; the leash must cap their sum. On the old code this moved 2 x MAX_PER_PAYMENT.
+#[test]
+fn spend_across_two_budget_roots_is_capped_by_the_leash() {
+    let mut w = world();
+    fund(&mut w, &[MAX_PER_PAYMENT]);
+    let old_leaves = w.leaves.clone();
+    let old = w.budget.last().unwrap().clone();
+
+    let new_recall = keys(&mut w.test, 6);
+    let new_leaves = vec![errand(w.leash), key_leaf(new_recall.pk)];
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_budget_root",
+        args![root_of(&new_leaves), MAX_PER_PAYMENT],
+        &w.owner.sk.clone(),
+    );
+    w.test.execute_expect_success(tx, vec![]);
+    w.leaves = new_leaves.clone();
+    fund(&mut w, &[MAX_PER_PAYMENT]);
+    let new = w.budget.last().unwrap().clone();
+
+    let over = stealth::generate_transfer_data(
+        [input_under(&old_leaves, &old), input_under(&new_leaves, &new)],
+        0u64,
+        [(2 * MAX_PER_PAYMENT, payee_auth(&w, 0))],
+        0u64,
+    );
+    println!("claims in the statement: {}", over.statement.covenant_claims.len());
+    pay_refused(
+        &mut w,
+        &over,
+        Who::Agent,
+        "familiar: payment of 80 over the per-payment cap 40",
+    );
+
+    // Within the cap, UTXOs under both roots are spent together; the change moves under the current root.
+    let ok = stealth::generate_transfer_data(
+        [input_under(&old_leaves, &old), input_under(&new_leaves, &new)],
+        0u64,
+        [(MAX_PER_PAYMENT, budget_auth(&w)), (MAX_PER_PAYMENT, payee_auth(&w, 0))],
+        0u64,
+    );
+    let tx = pay_tx(&w, &ok, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+/// Two UTXOs under the same root are one partition for the covenant: one claim and one cap for the whole spend,
+/// so the engine itself refuses it before the leash gets to count anything.
+#[test]
+fn two_utxos_under_one_root_are_one_covenant_partition() {
+    let mut w = world();
+    let total = w.budget[0].value + w.budget[1].value;
+    let over = stealth::generate_transfer_data(
+        [budget_input(&w, 0, 0), budget_input(&w, 1, 0)],
+        0u64,
+        [
+            (total - 2 * MAX_PER_PAYMENT, budget_auth(&w)),
+            (2 * MAX_PER_PAYMENT, payee_auth(&w, 0)),
+        ],
+        0u64,
+    );
+    println!("claims in the statement: {}", over.statement.covenant_claims.len());
+    pay_refused(
+        &mut w,
+        &over,
+        Who::Agent,
+        "covenant not satisfied: BalancePreserved(40)",
+    );
+    let ok = stealth::generate_transfer_data(
+        [budget_input(&w, 0, 0), budget_input(&w, 1, 0)],
+        0u64,
+        [
+            (total - MAX_PER_PAYMENT, budget_auth(&w)),
+            (MAX_PER_PAYMENT, payee_auth(&w, 0)),
+        ],
+        0u64,
+    );
+    let tx = pay_tx(&w, &ok, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+/// Shrinking `window_epochs` mid-window used to re-align the grid onto a past point and free what was spent. Now the
+/// window restarts at the change and keeps its `spent`.
+#[test]
+fn shrinking_the_window_keeps_what_was_spent() {
+    let mut w = world();
+    pay_ok(&mut w, 0, 40, 0);
+    pay_ok(&mut w, 1, 40, 1);
+    set_epoch(&mut w.test, START_EPOCH + 5);
+    let tx = tx_method(&w, w.leash, "set_policy", args![LIMIT, 3u64], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    let data = pay_statement(&w, 0, 30, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: window limit exceeded: 80 of 100 spent, 20 left, payment of 30 refused",
+    );
+    // The new window runs from the change (epoch 105), not from the old grid (which would reopen at 106).
+    set_epoch(&mut w.test, START_EPOCH + 5 + 2);
+    let data = pay_statement(&w, 0, 30, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: window limit exceeded: 80 of 100 spent",
+    );
+    set_epoch(&mut w.test, START_EPOCH + 5 + 3);
+    pay_ok(&mut w, 0, 30, 0);
+}
+
+// ---------------------------------------------------------------- more refusals (review: missing negative tests)
+
+#[test]
+fn zero_payment_is_refused() {
+    let mut w = world();
+    // A zero-value payee output is dropped by the stealth statement builder, so the template refuses the spend at
+    // the payee check, before the amount reaches `familiar_core::charge` (which also refuses zero, see core tests).
+    let data = pay_statement(&w, 0, 0, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(&mut w, &data, Who::Agent, "familiar: no payee output");
+}
+
+#[test]
+fn set_payees_rejects_duplicates() {
+    let mut w = world();
+    let payee = root_of(&[key_leaf(w.payees[0].pk)]);
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_payees",
+        args![vec![payee, payee]],
+        &w.owner.sk.clone(),
+    );
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, "familiar: duplicate payee");
+}
+
+// ---------------------------------------------------------------- privacy: single-use payee roots
+
+/// Turns single-use payee roots on and replaces the allow-list with `roots`.
+fn single_use(w: &mut World, roots: Vec<Hash32>) {
+    let tx = tx_method(w, w.leash, "set_single_use_payees", args![true], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    let tx = tx_method(w, w.leash, "set_payees", args![roots], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn single_use_payee_root_cannot_be_paid_twice() {
+    let mut w = world();
+    // Payee 0 hands the owner two roots (two one-time keys); an observer sees two unrelated roots.
+    let second = keys(&mut w.test, 6);
+    let roots = vec![root_of(&[key_leaf(w.payees[0].pk)]), root_of(&[key_leaf(second.pk)])];
+    single_use(&mut w, roots);
+
+    pay_ok(&mut w, 0, 10, 0);
+    // The first root is struck off: paying it again is refused, so repeat payments cannot share a root.
+    let data = pay_statement(&w, 0, 10, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: output to a payee not on the leash",
+    );
+    // The fresh root still works.
+    let data = pay_statement(
+        &w,
+        0,
+        10,
+        OutputAuthSpec::Conditions(vec![key_leaf(second.pk)]),
+        budget_auth(&w),
+    );
+    let tx = pay_tx(&w, &data, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn single_use_off_by_default_repeat_root_is_accepted() {
+    let mut w = world();
+    pay_ok(&mut w, 0, 10, 0);
+    pay_ok(&mut w, 0, 10, 0);
+}
+
+#[test]
+fn single_use_runs_out_of_roots_until_the_owner_tops_up() {
+    let mut w = world();
+    let roots = vec![root_of(&[key_leaf(w.payees[0].pk)])];
+    single_use(&mut w, roots);
+    pay_ok(&mut w, 0, 10, 0);
+    let data = pay_statement(&w, 0, 10, payee_auth(&w, 1), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: output to a payee not on the leash",
+    );
+    // The owner tops up with a fresh root; the agent can pay again.
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_payees",
+        args![vec![root_of(&[key_leaf(w.payees[1].pk)])]],
+        &w.owner.sk.clone(),
+    );
+    w.test.execute_expect_success(tx, vec![]);
+    pay_ok(&mut w, 0, 10, 1);
+}
+
+#[test]
+fn a_refused_payment_does_not_consume_a_single_use_root() {
+    let mut w = world();
+    let roots = vec![root_of(&[key_leaf(w.payees[0].pk)])];
+    single_use(&mut w, roots);
+    // Over the per-spend cap: refused by the covenant, the whole transaction is rolled back with the root intact.
+    let data = pay_statement(&w, 0, MAX_PER_PAYMENT + 1, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        &format!("covenant not satisfied: BalancePreserved({MAX_PER_PAYMENT})"),
+    );
+    pay_ok(&mut w, 0, 10, 0);
+}
+
+// ---------------------------------------------------------------- privacy: a recall without a covenant claim
+
+/// A stealth output for a hand-built statement (masks and nonces from deterministic test keys).
+fn witness_output(w: &mut World, seed: u8, value: u64, auth: SpendAuthorization) -> StealthOutputWitness {
+    let (mask, _) = w.test.new_key_pair(seed);
+    let (_, nonce) = w.test.new_key_pair(seed.wrapping_add(100));
+    StealthOutputWitness {
+        witness: OutputWitness {
+            amount: value,
+            mask,
+            sender_public_nonce: nonce,
+            minimum_value_promise: 0,
+            encrypted_data: EncryptedData::try_from(vec![0u8; EncryptedData::min_size()]).unwrap(),
+            resource_view_key: None,
+        },
+        auth,
+        tag: UtxoTag::new(0),
+    }
+}
+
+/// Budget UTXO `idx` spent through `leaf`, with no committed root recorded, so the wallet builds no covenant claim.
+fn claimless_input(w: &World, idx: usize, leaf: usize) -> StealthInputWitness {
+    let (witness, _root) = script_path_witness(&w.leaves, &w.leaves[leaf]).unwrap();
+    StealthInputWitness {
+        mask_and_value: MaskAndValue {
+            mask: w.budget[idx].mask.clone(),
+            value: w.budget[idx].value,
+        },
+        witness,
+        condition_root: None,
+    }
+}
+
+#[test]
+fn owner_recall_without_a_claim_does_not_reveal_what_is_left() {
+    let mut w = world();
+    pay_ok(&mut w, 0, 30, 0);
+    let total: u64 = w.budget.iter().map(|u| u.value).sum();
+    let owner_pk = w.owner.pk;
+    let outs = vec![witness_output(&mut w, 40, total, SpendAuthorization::Key(owner_pk))];
+    let inputs = vec![claimless_input(&w, 0, 1), claimless_input(&w, 1, 1)];
+    let recall = create_transfer_statement(inputs, Amount::zero(), outs.iter(), None).unwrap();
+    // Nothing in the statement says how much is recalled: no claim, no revealed amount.
+    assert!(recall.covenant_claims.is_empty());
+    assert!(recall.outputs_statement.revealed_output.is_none());
+    let tx = w
+        .test
+        .transaction()
+        .stealth_transfer(w.resource, recall)
+        .finish()
+        .seal(&w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn pay_without_a_covenant_claim_is_refused() {
+    let mut w = world();
+    let budget_root = root_of(&w.leaves);
+    let payee_root = root_of(&[key_leaf(w.payees[0].pk)]);
+    let change = w.budget[0].value - 10;
+    let outs = vec![
+        witness_output(&mut w, 41, change, SpendAuthorization::Script(budget_root)),
+        witness_output(&mut w, 42, 10, SpendAuthorization::Script(payee_root)),
+    ];
+    let spend = create_transfer_statement(vec![claimless_input(&w, 0, 0)], Amount::zero(), outs.iter(), None).unwrap();
+    assert!(spend.covenant_claims.is_empty());
+    let tx = tx_method(&w, w.leash, "pay", args![spend], &w.agent.sk.clone());
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, "familiar: spend without a covenant claim");
 }

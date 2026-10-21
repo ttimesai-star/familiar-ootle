@@ -59,6 +59,11 @@ jobs:
       - name: cargo build -p familiar-cli
         shell: bash
         run: cargo build -p familiar-cli 2>&1 | tee client.log
+      - name: cargo test -p familiar-cli (the obedient agent's parser)
+        shell: bash
+        run: cargo test -p familiar-cli 2>&1 | tee -a client.log
+      - name: observer script parses
+        run: python3 -m py_compile scripts/observer_view.py
       - name: upload log
         if: always()
         uses: actions/upload-artifact@v4
