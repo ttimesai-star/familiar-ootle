@@ -237,6 +237,11 @@ def observe(step, names):
             describe_statement(json_statement(ins["StealthTransfer"]["statement"]), names, v, h, fee=True)
         elif "CallMethod" in ins:
             v.append(f"fee intent calls `{ins['CallMethod']['method']}` on {short(ins['CallMethod']['call'].get('Address'), 26)}")
+    if summary.get("outcome") != "Commit" and body.get("instructions"):
+        v.append(
+            "**the main part was rejected**: only the fee was taken; what follows is public as submitted, but none of "
+            "it happened (no UTXO was spent or created)"
+        )
     for ins in body.get("instructions", []):
         if "CallMethod" in ins:
             call = ins["CallMethod"]
