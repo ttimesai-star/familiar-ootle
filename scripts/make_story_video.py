@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The 50-second video: an AI agent under prompt injection on a leash in coupon mode, with captions. Every frame of
+"""The one-minute video: an AI agent under prompt injection on a leash in coupon mode, with captions. Every frame of
 the middle part is the walk-through page showing one real Esmeralda transaction of Part 2 (docs/observer_view.json);
 the caption under it says what happened. The captions are checked against the run before recording: a caption whose
 outcome or reason does not match its transaction stops the script.
@@ -56,12 +56,12 @@ TITLE = (
 )
 SETUP = (
     "<h1>The leash</h1><p>10 hidden coupons. At most <b>4 per payment</b>, <b>6 per window</b>, only to listed shops."
-    "</p><p>Only the owner and the agent know what a coupon is worth. The chain never sees an amount.</p>"
+    "</p><p>Only the owner and the agent know what a coupon is worth. No transaction carries a payment amount.</p>"
     "<p>The agent obeys <b>every</b> payment instruction it reads. The network is the only guard.</p>"
 )
 END = (
-    "<h1>What the chain saw</h1><p>9 payment attempts, 2 accepted, 7 refused with an exact reason.</p>"
-    "<p><b>0 amounts.</b> Not the budget, not what is left, not what a payment moved.</p>"
+    "<h1>What the chain saw</h1><p>7 payment attempts by the agent: 2 paid, 5 refused with an exact reason.</p>"
+    "<p><b>No amount</b> of the budget, of what is left, or of any payment. Only the network fee is public.</p>"
     "<p>Try it: <code>familiar wallet · tap · leash · ask \"…\"</code></p>"
     "<p>Prototype, unaudited, Esmeralda testnet. MIT.</p>"
 )

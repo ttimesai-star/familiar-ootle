@@ -11,3 +11,4 @@ vendor.
 | 20.10 | Jules | fixes of 19.10 | both fixes approved (session then ended with an error, text as written) | [jules_rereview_2026-10-20.md](jules_rereview_2026-10-20.md) |
 | 21.10 | Jules | privacy changes (5652037) | 1 medium, 3 low | [jules_review_2026-10-21.md](jules_review_2026-10-21.md) |
 | 21.10 | Jules | fixes (051061c) | approved | [jules_rereview_2026-10-21.md](jules_rereview_2026-10-21.md) |
+| 21.10 | Jules | coupon mode, try-it CLI, tap, MCP (ff12a75) | no findings; one statement in it was wrong (`.gitignore` did not list the wallet file `me.json`): fixed in the commit that added this report | [jules_review_2026-10-21b.md](jules_review_2026-10-21b.md) |

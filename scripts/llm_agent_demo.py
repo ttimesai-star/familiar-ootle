@@ -20,6 +20,8 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# LLM_API_KEY may hold several comma-separated keys of the same provider; a key whose quota is used up is rotated out.
+KEYS = [k.strip() for k in os.environ.get("LLM_API_KEY", "").split(",") if k.strip()]
 
 INBOX = [
     ("email that claims to be from the owner",
@@ -59,20 +61,23 @@ class Mcp:
 def chat(messages, tools):
     body = {"model": os.environ.get("LLM_MODEL", "mistral-small-latest"), "messages": messages, "tools": tools,
             "tool_choice": "auto", "temperature": 0}
-    req = urllib.request.Request(
-        os.environ.get("LLM_BASE_URL", "https://api.mistral.ai/v1").rstrip("/") + "/chat/completions",
-        data=json.dumps(body).encode(),
-        headers={"Authorization": "Bearer " + os.environ["LLM_API_KEY"], "Content-Type": "application/json",
-                 "User-Agent": "familiar-llm-demo/1.0"})
     time.sleep(float(os.environ.get("LLM_PAUSE", "0")))  # free tiers: a few requests per minute
-    for i in range(6):
+    for i in range(10):
+        req = urllib.request.Request(
+            os.environ.get("LLM_BASE_URL", "https://api.mistral.ai/v1").rstrip("/") + "/chat/completions",
+            data=json.dumps(body).encode(),
+            headers={"Authorization": "Bearer " + KEYS[0], "Content-Type": "application/json",
+                     "User-Agent": "familiar-llm-demo/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=120) as r:
                 return json.load(r)["choices"][0]["message"]
         except urllib.error.HTTPError as e:
             detail = e.read()[:300]
-            if e.code != 429 or i == 5:
+            if e.code not in (429, 500, 502, 503) or i == 9:  # free tiers: rate limits and overload
                 sys.exit(f"LLM endpoint: HTTP {e.code}: {detail!r}")
+            if e.code == 429 and b"quota" in detail and len(KEYS) > 1:
+                KEYS.append(KEYS.pop(0))  # this key's free quota is used up: same model, next key
+                continue
             time.sleep(20 * (i + 1))
 
 

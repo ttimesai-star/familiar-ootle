@@ -242,7 +242,7 @@ def build(run: dict, repo: str, video: str | None) -> str:
 only to payees the owner listed, and the owner can take the budget back at any moment. The network enforces it, not
 the agent's code. In coupon mode no amount ever reaches the chain: not the budget, not what is left, not what a
 payment moved. An observer sees that a payment happened and how many hidden coupons it spent, never what a coupon is
-worth, nor who is behind a payee.</p>
+worth, nor who is behind a payee. Only the network fee of each transaction is public.</p>
 <nav class="links" aria-label="Project links">
 <a href="#walk-sec">Walk through the live run</a>
 <a href="#video-sec">Video</a>
