@@ -55,8 +55,9 @@ const PER_WINDOW: u64 = 6;
 const PER_PAYMENT: u64 = 4;
 const WINDOW_EPOCHS: u64 = 10_000;
 const PAYEES: [&str; 2] = ["candle-shop", "herb-shop"];
-const OWNER_FEES: u64 = 12 * FEE;
-const AGENT_FEES: u64 = 30 * FEE;
+/// Fees for the one-time keys: the whole leash must fit in one take from the tap (5 tTARI, minus its own fee).
+const OWNER_FEES: u64 = 10 * FEE;
+const AGENT_FEES: u64 = 20 * FEE;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CoinJ {
@@ -794,6 +795,13 @@ pub async fn tap_new(network: Network, wasm_path: &str, amount: u64) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_whole_leash_fits_in_one_take_from_the_tap() {
+        let take = 5 * TARI - FEE; // the tap pays its own fee from what it gives
+        let needed = COUPONS as u64 * COUPON_UT + OWNER_FEES + AGENT_FEES + FEE;
+        assert!(needed <= take, "{needed} > {take}");
+    }
 
     #[test]
     fn built_in_addresses_parse() {
