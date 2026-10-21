@@ -64,14 +64,16 @@ def chat(messages, tools):
         data=json.dumps(body).encode(),
         headers={"Authorization": "Bearer " + os.environ["LLM_API_KEY"], "Content-Type": "application/json",
                  "User-Agent": "familiar-llm-demo/1.0"})
-    for i in range(5):
+    time.sleep(float(os.environ.get("LLM_PAUSE", "0")))  # free tiers: a few requests per minute
+    for i in range(6):
         try:
             with urllib.request.urlopen(req, timeout=120) as r:
                 return json.load(r)["choices"][0]["message"]
         except urllib.error.HTTPError as e:
-            if e.code != 429 or i == 4:
-                raise
-            time.sleep(10 * (i + 1))
+            detail = e.read()[:300]
+            if e.code != 429 or i == 5:
+                sys.exit(f"LLM endpoint: HTTP {e.code}: {detail!r}")
+            time.sleep(20 * (i + 1))
 
 
 def decision(text):
