@@ -67,7 +67,8 @@ def main():
         "obeys injected instructions.</p><p>Left: what happened. Right: what anyone reading the chain can see.</p>"
     )
     end = (
-        "<h1>What stayed hidden</h1><p>How much the budget held and had left. Who was behind each payee root. "
+        "<h1>What stayed hidden</h1><p>How much the budget held and had left. In coupon mode, what any payment moved. "
+        "Who was behind each payee root. "
         "What the second leaf said (the owner's recall), until it was used.</p><p>What the network refused: every injected payment, "
         "with an exact reason.</p><p>Prototype, unaudited, testnet only. MIT.</p>"
         "<p><code>github.com/ttimesai-star/familiar-ootle</code></p>"

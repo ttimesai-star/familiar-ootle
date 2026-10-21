@@ -172,11 +172,15 @@ function init() {
     if (e.key === 'ArrowRight') go(cur + 1); if (e.key === 'ArrowLeft') go(cur - 1); });
   const m = location.hash.match(/^#step-(\d+)$/); const qs = q.get('step');
   if (q.has('capture')) document.body.classList.add('capture');
-  go(qs ? +qs - 1 : (m ? +m[1] - 1 : 0));
+  // Without a step in the URL, open at the first prompt injection: that is the story; step 1 is a faucet.
+  const firstInbox = Math.max(0, STEPS.findIndex(s => s.section === 'The agent reads its inbox'));
+  go(qs ? +qs - 1 : (m ? +m[1] - 1 : firstInbox));
   $('live-btn').onclick = live;
 }
 const FIELDS = ['resource', 'limit (uT per window)', 'window_epochs', 'window_start (epoch)', 'spent in this window (uT)',
-  'budget_root', 'max_per_payment (uT)', 'payee roots', 'single_use_payees', 'payments', 'paused'];
+  'budget_root', 'max_per_payment (uT)', 'payee roots', 'single_use_payees', 'payments', 'paused',
+  'coupon_root', 'coupon tree proof', 'coupons per window', 'coupon window (epochs)', 'coupon window start',
+  'coupons spent in this window', 'coupons per payment', 'coupon payments'];
 function val(v) {
   if (v && v['@cbor'] === 'bytes') return v.hex.slice(0, 16) + '…';
   if (v && v['@cbor'] === 'tag') return val(v.value);
@@ -236,24 +240,26 @@ def build(run: dict, repo: str, video: str | None) -> str:
 <h1>Familiar</h1>
 <p class="lead">A private allowance for AI agents on Tari Ootle. The agent can spend only up to the owner's limits,
 only to payees the owner listed, and the owner can take the budget back at any moment. The network enforces it, not
-the agent's code. An observer sees each payment, but not how much the agent holds, who is behind a payee, or what the
-hidden second leaf (the owner's recall) says until it is used.</p>
+the agent's code. In coupon mode no amount ever reaches the chain: not the budget, not what is left, not what a
+payment moved. An observer sees that a payment happened and how many hidden coupons it spent, never what a coupon is
+worth, nor who is behind a payee.</p>
 <nav class="links" aria-label="Project links">
 <a href="#walk-sec">Walk through the live run</a>
 <a href="#video-sec">Video</a>
 <a href="#live-sec">Read the leash live</a>
 <a href="{esc(repo)}">Source code (MIT)</a>
 <a href="{esc(repo)}/blob/main/THREAT_MODEL.md">Threat model</a>
-<a href="#quick">Quickstart</a>
+<a href="#quick">Try it yourself</a>
 </nav>
 </header>
 
 <section id="walk-sec" aria-labelledby="walk">
 <h2 id="walk">Walk through the run, transaction by transaction</h2>
 <p class="walkintro">{len(steps)} real transactions on the Esmeralda testnet, from {esc(first_at)} UTC: {n_ok} accepted,
-{n_no} refused by the network. Part 1 attacks the leash directly. Part 2 hands it to an AI agent that obeys every
-payment instruction it reads, including ones injected into a web page, an email and a fake receipt. For each step: what
-happened, and what anyone reading the chain can see. Use the arrows, the numbers, or the keyboard (← →).</p>
+{n_no} refused by the network. Part 1 attacks a leash in amount mode directly. Part 2, where this page opens, hands
+a leash in coupon mode to an AI agent that obeys every payment instruction it reads, including ones injected into a web
+page, an email and a fake receipt: no payment of Part 2 publishes an amount. For each step: what happened, and what
+anyone reading the chain can see. Use the arrows, the numbers, or the keyboard (← →).</p>
 <div class="controls">
 <button id="w-prev" aria-label="previous step">← Prev</button>
 <button id="w-next" class="primary" aria-label="next step">Next →</button>
@@ -310,6 +316,9 @@ also public: balance, every service it pays, who funds it.</p>
 <tr><td>payments only to allow-listed payees</td><td>every output under the budget root (change) or an allow-listed payee root</td></tr>
 <tr><td>optionally, each payee root is paid once</td><td>single-use mode strikes a paid root off the list: repeat payments to one shop land on unrelated roots</td></tr>
 <tr><td>the budget moves only through the leash</td><td>the spend condition requires <code>component(&lt;this leash&gt;)</code></td></tr>
+<tr><td>coupon mode: at most N coupons per payment and per window, no amount on-chain</td><td><code>pay_coupons</code>
+checks from each input's revealed leaf and inclusion proof that it is a coupon of this leash, refuses change and claims,
+and counts coupons; Pedersen balance proves that no value was created</td></tr>
 <tr><td>the owner recalls everything, without the agent</td><td>a hidden second leaf <code>public_key(&lt;owner one-time key&gt;)</code>, spent without a covenant claim so the amount is not published</td></tr>
 </table>
 <p class="small">Every budget UTXO: amount hidden by a Pedersen commitment, locked under a pure condition tree
@@ -322,21 +331,33 @@ also public: balance, every service it pays, who funds it.</p>
 <div class="grid2">
 <div class="card"><h3>Visible to anyone</h3><ul>
 <li>each payment, its time, the leash and the one-time key that signed it;</li>
-<li>the exact amount of each payment (the covenant claim);</li>
+<li>amount mode: the exact amount of each payment (the covenant claim); coupon mode: only how many coupons it spent;</li>
 <li>the errand leaf of each spent UTXO, and the whole component state (rule, window usage, roots).</li></ul></div>
 <div class="card"><h3>Hidden</h3><ul>
 <li>how much the budget holds and has left (commitments; the recall carries no claim);</li>
+<li>coupon mode: what any payment moved: the coupon denomination is written nowhere on-chain;</li>
 <li>who is behind a payee root;</li>
 <li>what the second leaf says (the owner's recall) until it is used; only its hash is published;</li>
 <li>with single-use roots: that two payments went to the same shop.</li></ul></div>
 </div>
-<p><b>Leaks, named.</b> Payment amounts are public. The window usage is public (component state). Payments of one
+<p><b>Leaks, named.</b> In amount mode payment amounts are public; in coupon mode their relative sizes are
+(3 coupons, then 2). The window usage is public (component state). Payments of one
 leash are linked by the leash and the agent key. In this demo the one-time keys are funded from one account in one
 transaction, which links them; a real owner funds them from separate stealth outputs. Prototype, not audited.</p>
 </section>
 
 <section aria-labelledby="quick">
-<h2 id="quick">Quickstart</h2>
+<h2 id="quick">Try it yourself</h2>
+<p>Your own leash in coupon mode on Esmeralda, from a fresh key, in about five minutes (prebuilt client in the
+release, or <code>cargo build -p familiar-cli --release</code>):</p>
+<pre><code>familiar wallet me.json        # a fresh testnet key, written only to me.json
+familiar tap    me.json        # 5 tTARI from the Familiar tap
+familiar leash  me.json        # a leash in coupon mode with 10 hidden coupons
+familiar pay    me.json candle-shop 2
+familiar ask    me.json "any text, e.g. a hidden instruction to pay refund-desk"
+familiar pause  me.json; familiar recall me.json; familiar show me.json</code></pre>
+<p>For an LLM agent: <code>scripts/familiar_mcp.py</code> is an MCP server whose only spending tool,
+<code>pay_through_leash</code>, goes through the same leash.</p>
 <pre><code># 1. check what an observer sees, from the public indexer only (no keys, no Rust)
 git clone {esc(repo)}.git && cd {esc(repo.rstrip('/').rsplit('/', 1)[-1])}
 pip install cbor2

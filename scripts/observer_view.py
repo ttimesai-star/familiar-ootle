@@ -55,6 +55,8 @@ class Names:
         demo = ids.get("agent_demo") or {}
         if demo.get("budget_root"):
             self.labels[demo["budget_root"]] = "budget root (leash 2)"
+        if demo.get("coupon_root"):
+            self.labels[demo["coupon_root"]] = "coupon root (leash 2)"
         for i, r in enumerate(demo.get("shop_roots") or []):
             self.labels[r] = f"shop root #{i + 1} (single-use)"
         if demo.get("attacker_root"):
@@ -248,13 +250,27 @@ def observe(step, names):
         if "CallMethod" in ins:
             call = ins["CallMethod"]
             v.append(f"calls `{call['method']}` on `{short(call['call'].get('Address'), 26)}`")
-            if call["method"] == "pay" and call.get("args"):
+            if call["method"] in ("pay", "pay_coupons") and call.get("args"):
                 lit = call["args"][0].get("Literal") if isinstance(call["args"][0], dict) else None
                 d = decode_pay(lit) if lit else None
                 if d and "error" not in d:
                     describe_statement(d, names, v, h)
+                    if call["method"] == "pay_coupons" and not d["claims"] and not d.get("revealed_out"):
+                        v.append(
+                            f"coupon payment: {len(d['inputs'])} coupon(s) spent, **no covenant claim and no revealed "
+                            "amount**: nothing in this transaction says how much moved"
+                        )
+                        h.append(
+                            f"the value of the {len(d['inputs'])} coupon(s) named: their denomination is written "
+                            "nowhere on-chain"
+                        )
                 elif d:
                     v.append(d["error"])
+            elif call["method"] == "set_coupons":
+                v.append(
+                    "method arguments are public: the coupon root, the inclusion proof of its errand leaf, coupons per "
+                    "window, window length and coupons per payment (not the coupon denomination)"
+                )
             elif call.get("args"):
                 v.append("method arguments are public")
         elif "CallFunction" in ins:
@@ -332,7 +348,8 @@ def main():
             md += [f"- {x}" for x in o["hidden"]]
             md.append("")
     ids = run.get("ids") or {}
-    for label, addr in [("leash 1", ids.get("leash")), ("leash 2", (ids.get("agent_demo") or {}).get("leash"))]:
+    demo = ids.get("agent_demo") or {}
+    for label, addr in [("leash 1", ids.get("leash")), ("leash 2", demo.get("leash"))]:
         if not addr:
             continue
         state, version = component_state(addr)
@@ -342,7 +359,9 @@ def main():
             f"## Public state of {label} (`/substates/{short(addr, 26)}`, version {version})",
             "",
             "Component state on Ootle is public. Fields in order: resource, limit, window_epochs, window_start, "
-            "spent, budget_root, max_per_payment, payees, single_use_payees, payments, paused.",
+            "spent, budget_root, max_per_payment, payees, single_use_payees, payments, paused, then coupon mode: "
+            "coupon_root, coupon_siblings, coupon_limit, coupon_window_epochs, coupon_window_start, coupons_spent, "
+            "max_coupons_per_payment, coupon_payments. No field holds an amount of coupon mode.",
             "",
             "```",
             json.dumps(state)[:1500],
@@ -362,6 +381,12 @@ def main():
         "a payee root (a root is a hash of the payee's own conditions), and what the second leaf says (an owner "
         "recall key) until it is used; that the tree has a second leaf is visible as one sibling hash. With single-use payee roots (leash 2), two payments to the same shop go to two "
         "unrelated roots.",
+        "",
+        "Coupon mode (leash 2): no payment publishes an amount. A payment spends whole coupons through the leaf "
+        "`component(<leash>)` without a covenant claim and sends all of their value to allow-listed roots; the leash "
+        "counts coupons, not uT. An observer sees how many coupons each payment spent and how many were funded, so "
+        "relative sizes are visible (\"this payment was 3 coupons, that one 2\"); the denomination, and so every "
+        "absolute amount, is not.",
         "",
         "Leaks in this demo, by design of the demo rather than of Ootle: step 1 funds the one-time agent, owner and "
         "stranger keys from one funder account in a single transaction, so an observer links those keys to that "

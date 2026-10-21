@@ -13,6 +13,14 @@
 //! pause switch. `pay` refuses any spend that is not shaped like "leash UTXOs in, change back under the budget root,
 //! the rest to allow-listed payees, nothing revealed".
 //!
+//! Coupon mode hides the amounts too. The owner cuts the budget into coupons: stealth UTXOs of one denomination that
+//! only the owner and the agent know, locked under a second tree whose errand leaf is `component(<this leash>)` with
+//! no covenant. `pay_coupons` checks from the revealed leaf and its inclusion proof that every input is a coupon of
+//! this leash, sends all of their value to allow-listed payees (no change), and counts coupons, not µT, against a
+//! window of its own. No covenant claim is built, so no amount appears anywhere on-chain: an observer sees that k
+//! hidden UTXOs went to opaque roots. The per-payment cap is `max_coupons_per_payment` x the denomination, by
+//! construction, and Pedersen balance proves that no value was created.
+//!
 //! The covenant counts per condition root: all inputs under one root are one partition with one claim. When the
 //! owner rotates the budget root, UTXOs under the old and the new root are two partitions, so a single spend could
 //! move `max_per_payment` from each. The component therefore also caps the total claimed outflow of a spend
@@ -20,7 +28,10 @@
 
 use familiar_core::{Policy, Window};
 use tari_template_lib::prelude::*;
-use tari_template_lib::types::{Hash32, stealth::SpendAuthorization};
+use tari_template_lib::types::{
+    Hash32,
+    stealth::{AtomicCondition, Covenant, SpendAuthorization, SpendCondition, StealthInput},
+};
 
 /// Upper bound on the allow-list, so the component state (and the cost of a `pay`) stays bounded.
 pub const MAX_PAYEES: usize = 16;
@@ -44,6 +55,16 @@ mod familiar {
         single_use_payees: bool,
         payments: u64,
         paused: bool,
+        /// Coupon mode (see the module docs). The root of the coupon tree and the inclusion proof of its errand leaf,
+        /// so `pay_coupons` can tell from an input's witness alone that it is a coupon of this leash.
+        coupon_root: Option<Hash32>,
+        coupon_siblings: Vec<Hash32>,
+        coupon_limit: u64,
+        coupon_window_epochs: u64,
+        coupon_window_start: u64,
+        coupons_spent: u64,
+        max_coupons_per_payment: u64,
+        coupon_payments: u64,
     }
 
     impl Familiar {
@@ -77,10 +98,19 @@ mod familiar {
                 single_use_payees: false,
                 payments: 0,
                 paused: false,
+                coupon_root: None,
+                coupon_siblings: Vec::new(),
+                coupon_limit: 0,
+                coupon_window_epochs: 0,
+                coupon_window_start: 0,
+                coupons_spent: 0,
+                max_coupons_per_payment: 0,
+                coupon_payments: 0,
             })
             .with_access_rules(
                 ComponentAccessRules::new()
                     .method("pay", rule!(public_key(agent)))
+                    .method("pay_coupons", rule!(public_key(agent)))
                     .method("status", rule!(allow_all))
                     .method("pause", rule!(public_key(owner)))
                     .method("resume", rule!(public_key(owner)))
@@ -88,6 +118,7 @@ mod familiar {
                     .method("set_payees", rule!(public_key(owner)))
                     .method("set_budget_root", rule!(public_key(owner)))
                     .method("set_single_use_payees", rule!(public_key(owner)))
+                    .method("set_coupons", rule!(public_key(owner)))
                     .default(rule!(deny_all)),
             )
             // No component owner: an owner would bypass the method rules above (it could call `pay`), and nobody needs
@@ -112,6 +143,14 @@ mod familiar {
                 "familiar: revealed outputs are not allowed"
             );
             assert!(!spend.stealth_inputs().is_empty(), "familiar: nothing spent");
+            // Only budget UTXOs, whose errand leaf carries the per-spend covenant. Without this a spend could add
+            // coupons (no covenant, so no claim) and move their value uncounted (found while adding coupon mode).
+            for input in spend.stealth_inputs() {
+                assert!(
+                    has_covenant(input),
+                    "familiar: pay spends budget UTXOs only, coupons go through pay_coupons"
+                );
+            }
 
             let mut payee_outputs = 0u64;
             let mut paid_roots: Vec<Hash32> = Vec::new();
@@ -190,6 +229,92 @@ mod familiar {
             );
         }
 
+        /// The agent pays with coupons. Every input must be a coupon of this leash (its revealed leaf is
+        /// `component(<this leash>)` and its inclusion proof is the coupon tree's, so the engine, which recomputes the
+        /// root, spends it only if it is locked under the coupon root). Every output goes to an allow-listed payee:
+        /// no change, so a coupon cannot be merged into a bigger one. The statement must carry no covenant claim and
+        /// no revealed amount, so nothing on-chain says how much moved. The window counts coupons.
+        pub fn pay_coupons(&mut self, spend: StealthTransferStatement) {
+            assert!(!self.paused, "familiar: leash is paused by the owner");
+            assert!(self.coupon_root.is_some(), "familiar: coupons not set");
+            assert!(
+                spend.inputs_statement.revealed_amount.is_zero(),
+                "familiar: revealed inputs are not allowed"
+            );
+            assert!(
+                spend.outputs_statement.revealed_output.is_none(),
+                "familiar: revealed outputs are not allowed"
+            );
+            assert!(
+                spend.covenant_claims.is_empty(),
+                "familiar: a coupon payment reveals no amount (covenant claim present)"
+            );
+
+            let leaf = coupon_leaf();
+            let coupons = spend.stealth_inputs().len() as u64;
+            assert!(coupons > 0, "familiar: nothing spent");
+            for input in spend.stealth_inputs() {
+                let is_coupon = input
+                    .witness
+                    .as_script_path()
+                    .is_some_and(|(l, proof, _)| *l == leaf && proof.siblings == self.coupon_siblings);
+                assert!(is_coupon, "familiar: input is not a coupon of this leash");
+            }
+            assert!(
+                coupons <= self.max_coupons_per_payment,
+                "familiar: {coupons} coupons in one payment, the cap is {cap}",
+                cap = self.max_coupons_per_payment
+            );
+
+            let mut paid_roots: Vec<Hash32> = Vec::new();
+            for output in spend.stealth_outputs() {
+                match &output.auth {
+                    SpendAuthorization::Script(root) if self.payees.contains(root) => {
+                        if paid_roots.contains(root) {
+                            assert!(
+                                !self.single_use_payees,
+                                "familiar: single-use payee root paid twice in one spend"
+                            );
+                        } else {
+                            paid_roots.push(*root);
+                        }
+                    }
+                    _ => panic!("familiar: a coupon payment goes to allow-listed payees only, no change"),
+                }
+            }
+            assert!(!paid_roots.is_empty(), "familiar: no payee output");
+
+            let policy = Policy {
+                limit: self.coupon_limit,
+                window_epochs: self.coupon_window_epochs,
+            };
+            let window = Window {
+                start: self.coupon_window_start,
+                spent: self.coupons_spent,
+            };
+            let window = match familiar_core::charge(&policy, window, Consensus::current_epoch(), coupons) {
+                Ok(window) => window,
+                Err(refusal) => panic!("{refusal} (coupons)"),
+            };
+
+            let revealed = ResourceManager::get(self.resource).stealth_transfer(spend);
+            assert!(revealed.is_none(), "familiar: unexpected revealed output");
+
+            self.coupon_window_start = window.start;
+            self.coupons_spent = window.spent;
+            self.coupon_payments += 1;
+            if self.single_use_payees {
+                self.payees.retain(|root| !paid_roots.contains(root));
+            }
+            emit_event(
+                "PaidCoupons",
+                metadata![
+                    "payment" => self.coupon_payments.to_string(),
+                    "coupons" => coupons.to_string(),
+                ],
+            );
+        }
+
         /// The rule and the current window. Component state is public on Ootle, so this hides nothing that the
         /// state and the payment amounts do not already show; it exists for clients. The budget itself is not here: it
         /// lives in hidden UTXOs that only the owner and the agent can open. There is deliberately no "remaining"
@@ -216,7 +341,78 @@ mod familiar {
                 budget_root_set: self.budget_root.is_some(),
                 payees_left: self.payees.len() as u64,
                 single_use_payees: self.single_use_payees,
+                coupons_set: self.coupon_root.is_some(),
+                coupons_per_window: self.coupon_limit,
+                coupon_window_epochs: self.coupon_window_epochs,
+                coupons_spent_in_window: self.current_coupon_window().map_or(0, |w| w.spent),
+                max_coupons_per_payment: self.max_coupons_per_payment,
+                coupon_payments: self.coupon_payments,
             }
+        }
+
+        /// Turns coupon mode on, or changes it. `root` is the coupon tree (errand leaf `component(<this leash>)`, no
+        /// covenant, plus the owner's recall leaf) and `siblings` the inclusion proof of the errand leaf in it, both
+        /// computed by the owner's client. At most `per_window` coupons per `window_epochs` epochs and
+        /// `per_payment` coupons in one payment. Changing the rule keeps the coupons already spent in the window,
+        /// as `set_policy` does. The denomination is not here: only the owner and the agent know it.
+        pub fn set_coupons(
+            &mut self,
+            root: Hash32,
+            siblings: Vec<Hash32>,
+            per_window: u64,
+            window_epochs: u64,
+            per_payment: u64,
+        ) {
+            let policy = Policy {
+                limit: per_window,
+                window_epochs,
+            };
+            if let Err(refusal) = policy.validate() {
+                panic!("{refusal}");
+            }
+            assert!(per_payment > 0, "familiar: per-payment cap must be positive");
+            assert!(!self.payees.contains(&root), "familiar: coupon root cannot be a payee");
+            assert!(
+                self.budget_root != Some(root),
+                "familiar: coupon root cannot be the budget root"
+            );
+            let now = Consensus::current_epoch();
+            let window = if self.coupon_root.is_some() {
+                let old = Policy {
+                    limit: self.coupon_limit,
+                    window_epochs: self.coupon_window_epochs,
+                };
+                let window = Window {
+                    start: self.coupon_window_start,
+                    spent: self.coupons_spent,
+                };
+                match familiar_core::restart_window(&old, window, now) {
+                    Ok(window) => window,
+                    Err(refusal) => panic!("{refusal}"),
+                }
+            } else {
+                Window { start: now, spent: 0 }
+            };
+            self.coupon_root = Some(root);
+            self.coupon_siblings = siblings;
+            self.coupon_limit = per_window;
+            self.coupon_window_epochs = window_epochs;
+            self.coupon_window_start = window.start;
+            self.coupons_spent = window.spent;
+            self.max_coupons_per_payment = per_payment;
+        }
+
+        fn current_coupon_window(&self) -> Option<Window> {
+            self.coupon_root?;
+            let policy = Policy {
+                limit: self.coupon_limit,
+                window_epochs: self.coupon_window_epochs,
+            };
+            let window = Window {
+                start: self.coupon_window_start,
+                spent: self.coupons_spent,
+            };
+            familiar_core::current(&policy, window, Consensus::current_epoch()).ok()
         }
 
         pub fn pause(&mut self) {
@@ -268,6 +464,9 @@ mod familiar {
             if let Some(root) = self.budget_root {
                 assert!(!payees.contains(&root), "familiar: budget root cannot be a payee");
             }
+            if let Some(root) = self.coupon_root {
+                assert!(!payees.contains(&root), "familiar: coupon root cannot be a payee");
+            }
             self.payees = payees;
         }
 
@@ -277,6 +476,10 @@ mod familiar {
         /// spend whatever roots its inputs are under.
         pub fn set_budget_root(&mut self, root: Hash32, max_per_payment: u64) {
             assert!(!self.payees.contains(&root), "familiar: budget root cannot be a payee");
+            assert!(
+                self.coupon_root != Some(root),
+                "familiar: budget root cannot be the coupon root"
+            );
             assert!(max_per_payment > 0, "familiar: per-payment cap must be positive");
             self.budget_root = Some(root);
             self.max_per_payment = max_per_payment;
@@ -294,6 +497,26 @@ mod familiar {
         pub budget_root_set: bool,
         pub payees_left: u64,
         pub single_use_payees: bool,
+        pub coupons_set: bool,
+        pub coupons_per_window: u64,
+        pub coupon_window_epochs: u64,
+        pub coupons_spent_in_window: u64,
+        pub max_coupons_per_payment: u64,
+        pub coupon_payments: u64,
+    }
+
+    /// The coupon tree's errand leaf: spendable only from inside this leash, no covenant (so no claim, no amount).
+    fn coupon_leaf() -> SpendCondition {
+        SpendCondition::access_rule(rule!(component(CallerContext::current_component_address())))
+    }
+
+    /// Whether the input is spent through a leaf with a `BalancePreserved` covenant (a budget UTXO's errand leaf).
+    fn has_covenant(input: &StealthInput) -> bool {
+        input.witness.as_script_path().is_some_and(|(leaf, _, _)| {
+            leaf.conditions()
+                .iter()
+                .any(|c| matches!(c, AtomicCondition::Covenant(Covenant::BalancePreserved(_))))
+        })
     }
 
     fn check_payees(payees: &[Hash32]) {
