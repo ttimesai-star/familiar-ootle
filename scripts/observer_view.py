@@ -407,18 +407,25 @@ def main():
         if not pk:
             continue
         hits = [x for x in steps if x.get("tx_id") and pk in RAW.get(x["tx_id"], "")]
-        state, _ = component_state(addr) if addr else (None, None)
-        in_state = state is not None and pk in json.dumps(state)
+        in_state = bool(addr) and pk in json.dumps(fetch(f"/substates/{addr}"))
         where = f"first in step **{hits[0]['step']}**" if hits else "in no transaction of the run"
         first_seen.append(
             f"- {label}: recall key `{short(pk)}` appears {where} ({len(hits)} transaction(s) in all); "
-            f"in the leash's public state: **{'yes' if in_state else 'no'}**"
+            f"in the leash's public substate (state and access rules): **{'yes' if in_state else 'no'}**"
         )
         run.setdefault("recall_key_check", {})[label] = {
             "first_step": hits[0]["step"] if hits else None,
             "transactions": len(hits),
             "in_leash_state": in_state,
         }
+    owner = ids.get("owner_pk")
+    if first_seen and owner:
+        owner_in = [label for label, addr in [("leash 1", ids.get("leash")), ("leash 2", demo.get("leash"))]
+                    if addr and owner in json.dumps(fetch(f"/substates/{addr}"))]
+        first_seen.append(
+            f"- for contrast, the owner key `{short(owner)}` is in the public substate (access rules) of: "
+            f"{', '.join(owner_in) or 'neither leash'}"
+        )
     if first_seen:
         md += [
             "## Where the recall keys first appear",

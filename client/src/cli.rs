@@ -61,7 +61,8 @@ const PER_WINDOW: u64 = 6;
 const PER_PAYMENT: u64 = 4;
 const WINDOW_EPOCHS: u64 = 10_000;
 const PAYEES: [&str; 2] = ["candle-shop", "herb-shop"];
-/// What one take from the Familiar tap gives (set when the tap was created).
+/// What one take from the Familiar tap gives (set when the tap was created; `tap-status` reads it from the tap).
+#[cfg(test)]
 const TAP_TAKE: u64 = 5 * TARI;
 /// Fees for the one-time keys: the whole leash must fit in one take from the tap (5 tTARI, minus its own fee).
 const OWNER_FEES: u64 = 10 * FEE;
@@ -766,25 +767,54 @@ pub fn show(path: &str) -> Result<()> {
 /// `familiar tap-status`: what the tap holds and how many more leashes it can fund. Read-only, no wallet needed.
 pub async fn tap_status(network: Network) -> Result<()> {
     let tap = tap_address()?;
-    // A throwaway key: the provider wants a wallet, reading needs none.
-    let p = connect(
-        network,
-        &format!("{}:{}", new_keys().sk.to_hex(), new_keys().sk.to_hex()),
-    )
-    .await?;
-    let left = p
-        .get_account_balance(tap, TARI_TOKEN)
-        .await
-        .map_err(|e| anyhow!("indexer: {e:?}"))?;
-    let left: u64 = left.to_string().parse().context("tap balance")?;
+    let base = default_indexer_url(network).to_string();
+    let base = base.trim_end_matches('/');
+    let component = get_json(&format!("{base}/substates/{tap}")).await?;
+    let (vault, per_take, takes) = tap_fields(&component).context("unexpected tap state")?;
+    let left =
+        vault_amount(&get_json(&format!("{base}/substates/{vault}")).await?).context("unexpected vault state")?;
     println!("tap {tap}");
     println!(
-        "holds {left} uT: {} more takes of {TAP_TAKE} uT (one take funds one leash)",
-        left / TAP_TAKE
+        "holds {left} uT: {} more takes of {per_take} uT (one take funds one leash); {takes} takes so far",
+        left / per_take.max(1)
     );
-    println!("public state: https://ootle-indexer-a.tari.com/substates/{tap}");
+    println!("public state: {base}/substates/{tap}");
     println!("anyone can refill it: familiar tap-top-up <me.json> <uT> (from that wallet's account)");
     Ok(())
+}
+
+/// GET a JSON document from the indexer (it refuses requests without a User-Agent).
+async fn get_json(url: &str) -> Result<serde_json::Value> {
+    let text = reqwest::Client::new()
+        .get(url)
+        .header("User-Agent", "familiar-cli")
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?
+        .error_for_status()
+        .with_context(|| format!("GET {url}"))?
+        .text()
+        .await?;
+    serde_json::from_str(&text).with_context(|| format!("parse {url}"))
+}
+
+/// The tap's vault id, `per_take` and the number of takes, from its public component state
+/// `[funds: Vault, per_take, per_epoch, epoch, taken_in_epoch, takes]`.
+fn tap_fields(substate: &serde_json::Value) -> Option<(String, u64, u64)> {
+    let state = substate["state"]["up"]["substate"]["Component"]["body"]["state"].as_array()?;
+    let vault = state.first()?["value"]["hex"].as_str()?;
+    Some((
+        format!("vault_{vault}"),
+        state.get(1)?.as_u64()?,
+        state.get(5)?.as_u64()?,
+    ))
+}
+
+/// The revealed tTARI in a vault substate.
+fn vault_amount(substate: &serde_json::Value) -> Option<u64> {
+    let container = &substate["state"]["up"]["substate"]["Vault"]["resource_container"];
+    let inner = container.as_object()?.values().next()?;
+    inner["revealed_amount"].as_str()?.parse().ok()
 }
 
 /// `familiar tap-top-up <state> <uT>`: moves `amount` from the wallet's account into the tap (`top_up` is open to all).
@@ -934,6 +964,24 @@ mod tests {
                 assert_eq!(coupons_for(amount, c), n, "{amount} at {c}");
             }
         }
+    }
+
+    #[test]
+    fn tap_status_reads_the_indexer_format() {
+        // shapes as returned by ootle-indexer-a.tari.com on 21.10.2026 (tap component and its vault)
+        let tap: serde_json::Value = serde_json::from_str(
+            r#"{"version":8,"state":{"up":{"substate":{"Component":{"body":{"state":[{"@cbor":"tag","tag":132,
+            "value":{"@cbor":"bytes","hex":"9c87"}},5000000,20,12563,1,8]}}}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(tap_fields(&tap), Some(("vault_9c87".into(), 5_000_000, 8)));
+        let vault: serde_json::Value = serde_json::from_str(
+            r#"{"state":{"up":{"substate":{"Vault":{"resource_container":{"Stealth":{"address":"resource_01",
+            "revealed_amount":"460000000","locked_amount":"0"}},"freeze_flags":0}}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(vault_amount(&vault), Some(460_000_000));
+        assert_eq!(tap_fields(&vault), None);
     }
 
     #[test]
