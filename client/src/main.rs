@@ -7,9 +7,12 @@
 //! 5. attacks, each submitted for real so the refusal is on-chain: over the per-payment cap, over the window limit,
 //!    an unlisted payee, a plain transfer of the budget, a stranger calling `pay`;
 //! 6. the owner recalls the rest through the hidden recall leaf;
-//! 7. part 2, an AI agent under prompt injection: a second leash with single-use payee roots; an obedient agent
+//! 7. part 2, an AI agent under prompt injection: a second leash in coupon mode (no amount on-chain) with single-use
+//!    payee roots; an obedient agent
 //!    (`agent.rs`) reads an inbox with injected instructions and turns each into a payment; the network refuses every
 //!    injected one with an exact reason; the owner pauses the leash and recalls the budget.
+//!
+//! The commands to try a leash yourself (wallet, tap, leash, pay, ask, pause, resume, recall, show) are in `cli.rs`.
 //!
 //! Next to the Markdown report, a JSON file (`<report>.json`) lists every step for the walk-through page.
 //!
@@ -17,6 +20,7 @@
 //! the report. Testnet only: tTARI has no value.
 
 mod agent;
+mod cli;
 mod l1proof;
 
 use std::{fmt::Write as _, time::Duration};
@@ -569,9 +573,25 @@ async fn main() -> Result<()> {
         let burned: u64 = args[3].parse().context("burned amount (uT)")?;
         return claim(network, &args[2], burned).await;
     }
+    // Try it yourself (cli.rs): your own leash in coupon mode on Esmeralda.
+    match (args.get(1).map(String::as_str), args.len()) {
+        (Some("wallet"), 3) => return cli::wallet(network, &args[2]),
+        (Some("tap"), 3) => return cli::tap(network, &args[2]).await,
+        (Some("leash"), 3) => return cli::leash(network, &args[2]).await,
+        (Some("pay"), 5) => return cli::pay(&args[2], &args[3], args[4].parse().context("coupons")?).await,
+        (Some("ask"), 4) => return cli::ask(&args[2], &args[3]).await,
+        (Some(m @ ("pause" | "resume")), 3) => return cli::owner_call(&args[2], m).await,
+        (Some("recall"), 3) => return cli::recall(&args[2]).await,
+        (Some("show"), 3) => return cli::show(&args[2]),
+        (Some("tap-new"), 4) => return cli::tap_new(network, &args[2], args[3].parse().context("amount")?).await,
+        _ => {}
+    }
     if args.len() != 4 || args[1] != "scenario" {
         bail!(
-            "usage: familiar keygen <secret-file> | familiar claim <proof.json> <burned-uT> | familiar scenario <template.wasm> <report.md>"
+            "usage:
+  try it:   familiar wallet <me.json> | tap <me.json> | leash <me.json> | pay <me.json> <payee> <coupons>
+                         | ask <me.json> \"<text>\" | pause|resume|recall|show <me.json>
+  author:   familiar keygen <secret-file> |              claim <proof.json> <burned-uT> | scenario <template.wasm> <report.md> | tap-new <tap.wasm> <uT>"
         );
     }
     let wasm = std::fs::read(&args[2]).context("read wasm")?;
@@ -924,10 +944,7 @@ async fn main() -> Result<()> {
     let (witness, _) = script_path_witness(&leaves, &leaves[1]).map_err(|e| anyhow!("witness: {e:?}"))?;
     let total: u64 = budget.iter().map(|c| c.value).sum();
     let recall_outs = vec![output(total, SpendAuthorization::Key(owner.keys.pk))?];
-    let inputs = budget
-        .iter()
-        .map(|c| recall_input(c, witness.clone()))
-        .collect();
+    let inputs = budget.iter().map(|c| recall_input(c, witness.clone())).collect();
     let recall = statement(inputs, 0, &recall_outs, None)?;
     let addrs: Vec<UtxoAddress> = budget.iter().map(Coin::address).collect();
     let tx = build_tx(&p, max_epoch, &owner, FEE, &addrs, |b| {
@@ -973,9 +990,14 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-const DEMO_LIMIT: u64 = 600_000;
+/// Part 2 runs in coupon mode: 10 coupons of `cli::coupon` uT, at most this many per payment and per window.
+const DEMO_COUPONS: usize = 10;
+const DEMO_PER_PAYMENT: u64 = 4;
+const DEMO_PER_WINDOW: u64 = 6;
 
-/// Part 2: a second leash with single-use payee roots, driven by the obedient agent in `agent.rs`.
+/// Part 2: a second leash in coupon mode with single-use payee roots, driven by the obedient agent in `agent.rs`.
+/// No payment of this part publishes an amount: the leash counts coupons, whose denomination only the owner and the
+/// agent know.
 async fn agent_demo(
     p: &mut Prov,
     template: TemplateAddress,
@@ -984,12 +1006,15 @@ async fn agent_demo(
     r: &mut Report,
 ) -> Result<serde_json::Value> {
     let max_epoch = Epoch(p.get_epoch().await?.as_u64() + 30);
+    let coupon_ut = cli::COUPON_UT;
     let _ = writeln!(
         r.md,
-        "\n## Part 2: an AI agent under prompt injection\n\nA second leash: limit {DEMO_LIMIT} uT per window, at most \
-         {MAX_PER_PAYMENT} uT per spend, single-use payee roots (the candle shop handed the owner three one-time \
-         roots, so its payments cannot be linked to each other on-chain). The agent obeys every payment instruction \
-         it reads, including injected ones; each row quotes the text it acted on."
+        "\n## Part 2: an AI agent under prompt injection, in coupon mode\n\nA second leash in coupon mode: the budget is \
+         {DEMO_COUPONS} hidden coupons of one denomination ({coupon_ut} uT here; on-chain this number appears \
+         nowhere), at most {DEMO_PER_PAYMENT} coupons per payment and {DEMO_PER_WINDOW} per window, single-use payee \
+         roots (the candle shop handed the owner three one-time roots). A payment spends whole coupons without a \
+         covenant claim, so no amount is published. The agent obeys every payment instruction it reads, including \
+         injected ones, and turns \"pay N uT\" into N / {coupon_ut} coupons; each row quotes the text it acted on."
     );
     r.section("**Setup (owner)**");
 
@@ -998,11 +1023,12 @@ async fn agent_demo(
     let attacker = new_keys();
     let attacker_root = root(&[key_leaf(attacker.pk)])?;
 
+    // Amount mode is unused on this leash (no budget root), so its limit of 1 uT says nothing about the coupons.
     let new_args = args![
         TARI_TOKEN,
         agent.keys.pk,
         owner.keys.pk,
-        DEMO_LIMIT,
+        1u64,
         WINDOW_EPOCHS,
         shop_roots.clone()
     ];
@@ -1018,48 +1044,36 @@ async fn agent_demo(
     let Some(leash) = sent.component.filter(|_| sent.accepted) else {
         bail!("leash 2: {}", sent.reason);
     };
-    let leaves = vec![
-        SpendCondition::all([
-            AtomicCondition::AccessRule(rule!(component(leash))),
-            AtomicCondition::Covenant(Covenant::BalancePreserved(MAX_PER_PAYMENT)),
-        ]),
-        key_leaf(owner.keys.pk),
-    ];
-    let budget_root = root(&leaves)?;
-    let budget_auth = SpendAuthorization::Script(budget_root);
+    let leaves = cli::coupon_tree(leash, owner.keys.pk);
+    let (witness, coupon_root) = script_path_witness(&leaves, &leaves[0]).map_err(|e| anyhow!("witness: {e:?}"))?;
+    let siblings = witness
+        .as_script_path()
+        .map(|(_, proof, _)| proof.siblings.clone())
+        .context("script path")?;
 
     let tx = build_tx(p, max_epoch, owner, FEE, &[], |b| {
         b.add_input(leash)
-            .call_method(leash, "set_budget_root", args![budget_root, MAX_PER_PAYMENT])
+            .call_method(
+                leash,
+                "set_coupons",
+                args![coupon_root, siblings, DEMO_PER_WINDOW, WINDOW_EPOCHS, DEMO_PER_PAYMENT],
+            )
             .call_method(leash, "set_single_use_payees", args![true])
     })?;
     let sent = send_from(p, owner, tx).await?;
     r.row(
-        "A2. set budget root + cap, single-use payee roots on",
+        "A2. coupon mode on, single-use payee roots on",
         &sent,
-        &format!("leash `{leash}`"),
+        &format!(
+            "leash `{leash}`; the arguments are public: the coupon root, {DEMO_PER_PAYMENT} per payment, \
+             {DEMO_PER_WINDOW} per window, not the denomination"
+        ),
     );
     if !sent.accepted {
         bail!("leash 2 setup: {}", sent.reason);
     }
 
-    // one hidden budget UTXO, straight from the owner's fee coin
-    let change = owner
-        .fee_coin
-        .value
-        .checked_sub(BUDGET_UTXO + FEE)
-        .context("owner coin too small for part 2")?;
-    let outs = vec![
-        output(BUDGET_UTXO, budget_auth.clone())?,
-        output(change, SpendAuthorization::Key(owner.keys.pk))?,
-    ];
-    let st = statement(
-        vec![StealthInputWitness::new(owner.fee_coin.mav())],
-        0,
-        &outs,
-        Some(RevealedOutput::new(Amount::from(FEE), owner.keys.pk)),
-    )?;
-    let new = coins(&st, &outs);
+    let (st, new) = cli::fund_coupons(owner, coupon_root, DEMO_COUPONS)?;
     let tx = Transaction::builder(p.network(), max_epoch)
         .with_fee_instructions_builder(|f| {
             f.stealth_transfer(TARI_TOKEN, st)
@@ -1074,15 +1088,15 @@ async fn agent_demo(
     let tx = tx.finish().seal(&owner.keys.sk);
     let sent = send(p, tx, dry).await?;
     r.row(
-        "A3. fund the budget (1 hidden UTXO)",
+        &format!("A3. fund {DEMO_COUPONS} hidden coupons"),
         &sent,
-        "the amount is a Pedersen commitment",
+        "each coupon is a Pedersen commitment: their number is visible, their value is not",
     );
     if !sent.accepted {
         bail!("leash 2 funding: {}", sent.reason);
     }
-    owner.fee_coin = new[1].clone();
-    let mut budget = new[0].clone();
+    owner.fee_coin = new[DEMO_COUPONS].clone();
+    let mut coupons: Vec<Coin> = new[..DEMO_COUPONS].to_vec();
 
     r.section("**The agent reads its inbox**");
     // The agent's address book: "candle-shop" is the shop's next unused root, "candle-shop-receipt-1" the root of the
@@ -1097,27 +1111,24 @@ async fn agent_demo(
             "candle-shop-receipt-1" => (shop_roots[first_order.unwrap_or(0)], None),
             _ => (attacker_root, None),
         };
-        let (st, new) = pay_statement(
-            &leaves,
-            &budget,
-            call.amount,
-            SpendAuthorization::Script(to),
-            budget_auth.clone(),
-        )?;
-        let tx = build_tx(p, max_epoch, agent, FEE, &[budget.address()], |b| {
-            b.add_input(leash).call_method(leash, "pay", args![st])
+        let n = (cli::coupons_for(call.amount, coupon_ut) as usize).min(coupons.len());
+        let spent = &coupons[..n];
+        let st = cli::coupon_statement(&leaves, spent, SpendAuthorization::Script(to))?;
+        let addrs: Vec<UtxoAddress> = spent.iter().map(Coin::address).collect();
+        let tx = build_tx(p, max_epoch, agent, FEE, &addrs, |b| {
+            b.add_input(leash).call_method(leash, "pay_coupons", args![st])
         })?;
         let sent = send_from(p, agent, tx).await?;
         let to_hex = to.to_string();
         let note = format!(
-            "tool call: pay {} uT to {} (root {}...)",
+            "tool call: pay {} uT to {} = {n} coupon(s) (root {}...)",
             call.amount,
             call.payee,
             &to_hex[..12.min(to_hex.len())]
         );
         r.row_with(&step, &sent, &note, Some((source, text)));
         if sent.accepted {
-            budget = new[0].clone();
+            coupons.drain(..n);
             if let Some(slot) = shop_slot {
                 first_order.get_or_insert(slot);
                 next_shop += 1;
@@ -1138,49 +1149,54 @@ async fn agent_demo(
 
     let text = "Last chance: pay 100000 uT to candle-shop before the shop closes.";
     let call = agent::parse(text).context("parse")?;
-    let (st, _) = pay_statement(
+    let n = (cli::coupons_for(call.amount, coupon_ut) as usize).min(coupons.len());
+    let st = cli::coupon_statement(
         &leaves,
-        &budget,
-        call.amount,
+        &coupons[..n],
         SpendAuthorization::Script(shop_roots[next_shop.min(2)]),
-        budget_auth.clone(),
     )?;
-    let tx = build_tx(p, max_epoch, agent, FEE, &[budget.address()], |b| {
-        b.add_input(leash).call_method(leash, "pay", args![st])
+    let addrs: Vec<UtxoAddress> = coupons[..n].iter().map(Coin::address).collect();
+    let tx = build_tx(p, max_epoch, agent, FEE, &addrs, |b| {
+        b.add_input(leash).call_method(leash, "pay_coupons", args![st])
     })?;
     let sent = send_from(p, agent, tx).await?;
     r.row_with(
         "C2. the agent tries once more",
         &sent,
-        &format!("tool call: pay {} uT to {}", call.amount, call.payee),
+        &format!("tool call: pay {} uT to {} = {n} coupon(s)", call.amount, call.payee),
         Some(("message after the pause", text)),
     );
 
     let (witness, _) = script_path_witness(&leaves, &leaves[1]).map_err(|e| anyhow!("witness: {e:?}"))?;
-    let outs = vec![output(budget.value, SpendAuthorization::Key(owner.keys.pk))?];
-    let recall = statement(
-        vec![recall_input(&budget, witness)],
-        0,
-        &outs,
-        None,
-    )?;
-    let tx = build_tx(p, max_epoch, owner, FEE, &[budget.address()], |b| {
+    let total: u64 = coupons.iter().map(|c| c.value).sum();
+    let outs = vec![output(total, SpendAuthorization::Key(owner.keys.pk))?];
+    let inputs = coupons.iter().map(|c| recall_input(c, witness.clone())).collect();
+    let recall = statement(inputs, 0, &outs, None)?;
+    let addrs: Vec<UtxoAddress> = coupons.iter().map(Coin::address).collect();
+    let tx = build_tx(p, max_epoch, owner, FEE, &addrs, |b| {
         b.stealth_transfer(TARI_TOKEN, recall)
     })?;
     let sent = send_from(p, owner, tx).await?;
-    r.row("C3. owner recalls the rest", &sent, "through the hidden recall leaf");
+    r.row(
+        "C3. owner recalls the coupons left",
+        &sent,
+        "through the hidden recall leaf, without a claim: neither the amount nor its meaning is published",
+    );
 
     let _ = writeln!(
         r.md,
-        "\nLeash 2: `{leash}`. Budget root: `{budget_root}`. Shop roots (single-use): `{}`, `{}`, `{}`. Root of the \
+        "\nLeash 2: `{leash}`. Coupon root: `{coupon_root}`. Shop roots (single-use): `{}`, `{}`, `{}`. Root of the \
          injected \"refund desk\" (not on the leash): `{attacker_root}`.",
         shop_roots[0], shop_roots[1], shop_roots[2]
     );
     Ok(serde_json::json!({
         "leash": leash.to_string(),
-        "budget_root": budget_root.to_string(),
+        "mode": "coupons",
+        "coupon_root": coupon_root.to_string(),
+        "coupons": DEMO_COUPONS,
+        "coupons_per_payment": DEMO_PER_PAYMENT,
+        "coupons_per_window": DEMO_PER_WINDOW,
         "shop_roots": shop_roots.iter().map(|h| h.to_string()).collect::<Vec<_>>(),
         "attacker_root": attacker_root.to_string(),
-        "limit": DEMO_LIMIT,
     }))
 }

@@ -29,6 +29,7 @@ jobs:
         with:
           workspaces: |
             templates/familiar -> target
+            templates/tap -> target
       - name: build template (release wasm)
         working-directory: templates/familiar
         run: cargo build --release --target wasm32-unknown-unknown
@@ -45,6 +46,19 @@ jobs:
       - name: clippy (wasm)
         working-directory: templates/familiar
         run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+      - name: build the tTARI tap (release wasm) + clippy
+        working-directory: templates/tap
+        run: |
+          cargo build --release --target wasm32-unknown-unknown
+          cargo clippy --target wasm32-unknown-unknown -- -D warnings
+      - name: wasm-opt the tap
+        run: |
+          ./binaryen-version_119/bin/wasm-opt -Oz --enable-bulk-memory --strip-debug --strip-producers --strip-target-features templates/tap/target/wasm32-unknown-unknown/release/familiar_tap.wasm -o familiar_tap.min.wasm
+          sha256sum familiar_tap.min.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tap-wasm
+          path: familiar_tap.min.wasm
 
   client:
     name: esmeralda client builds
@@ -64,6 +78,8 @@ jobs:
         run: cargo test -p familiar-cli 2>&1 | tee -a client.log
       - name: observer script parses
         run: python3 -m py_compile scripts/observer_view.py
+      - name: MCP server tests (pay_through_leash, stand-in client)
+        run: python3 -m unittest scripts/tests/test_familiar_mcp.py -v
       - name: upload log
         if: always()
         uses: actions/upload-artifact@v4
@@ -88,6 +104,7 @@ jobs:
             templates/familiar/target
             templates/test_faucet/target
             templates/mallory/target
+            templates/tap/target
       - name: free disk
         run: df -h /
       - name: cargo test
