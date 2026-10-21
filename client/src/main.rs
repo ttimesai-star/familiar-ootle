@@ -2,7 +2,8 @@
 //!
 //! 1. faucet tTARI into one-time keys for the agent and the owner (fee coins);
 //! 2. publish the template, create a leash, set its budget root;
-//! 3. fund the budget: stealth UTXOs under `errand = component(leash) AND BalancePreserved(cap)` / `recall = owner`;
+//! 3. fund the budget: stealth UTXOs under `errand = component(leash) AND BalancePreserved(cap)` / `recall = <a key
+//!    of its own>` (not the owner key, which is public in the leash's access rules);
 //! 4. the agent pays two allow-listed payees;
 //! 5. attacks, each submitted for real so the refusal is on-chain: over the per-payment cap, over the window limit,
 //!    an unlisted payee, a plain transfer of the budget, a stranger calling `pay`;
@@ -181,6 +182,19 @@ fn build_tx(
     extra_inputs: &[UtxoAddress],
     main: impl FnOnce(TransactionBuilder) -> TransactionBuilder,
 ) -> Result<Tx> {
+    build_tx_cosigned(p, max_epoch, actor, None, fee, extra_inputs, main)
+}
+
+/// As `build_tx`, also signed by `cosigner` (the recall key: the recall leaf names it, not the owner key).
+fn build_tx_cosigned(
+    p: &Prov,
+    max_epoch: Epoch,
+    actor: &Actor,
+    cosigner: Option<&Keys>,
+    fee: u64,
+    extra_inputs: &[UtxoAddress],
+    main: impl FnOnce(TransactionBuilder) -> TransactionBuilder,
+) -> Result<Tx> {
     let (fee_st, fee_change) = fee_statement(&actor.fee_coin, &actor.keys, fee)?;
     let mut b = Transaction::builder(p.network(), max_epoch).with_fee_instructions_builder(|f| {
         f.stealth_transfer(TARI_TOKEN, fee_st)
@@ -195,9 +209,16 @@ fn build_tx(
         b = b.add_input(i.clone());
     }
     let unsigned = b.build_unsigned();
+    let seal = |u: tari_ootle_transaction::UnsignedTransaction| {
+        let mut t = u.finish();
+        if let Some(c) = cosigner {
+            t = t.add_signer(&actor.keys.pk, &c.sk);
+        }
+        t.seal(&actor.keys.sk)
+    };
     Ok(Tx {
-        dry: unsigned.clone().with_dry_run(true).finish().seal(&actor.keys.sk),
-        tx: unsigned.finish().seal(&actor.keys.sk),
+        dry: seal(unsigned.clone().with_dry_run(true)),
+        tx: seal(unsigned),
         fee_change,
     })
 }
@@ -577,7 +598,14 @@ async fn main() -> Result<()> {
     match (args.get(1).map(String::as_str), args.len()) {
         (Some("wallet"), 3) => return cli::wallet(network, &args[2]),
         (Some("tap"), 3) => return cli::tap(network, &args[2]).await,
-        (Some("leash"), 3) => return cli::leash(network, &args[2]).await,
+        (Some("leash"), 3) => return cli::leash(network, &args[2], None).await,
+        (Some("leash"), 5) if args[3] == "--coupon" => {
+            return cli::leash(network, &args[2], Some(args[4].parse().context("--coupon <uT>")?)).await;
+        }
+        (Some("tap-status"), 2) => return cli::tap_status(network).await,
+        (Some("tap-top-up"), 4) => {
+            return cli::tap_top_up(network, &args[2], args[3].parse().context("amount (uT)")?).await;
+        }
         (Some("pay"), 5) => return cli::pay(&args[2], &args[3], args[4].parse().context("coupons")?).await,
         (Some("ask"), 4) => return cli::ask(&args[2], &args[3]).await,
         (Some(m @ ("pause" | "resume")), 3) => return cli::owner_call(&args[2], m).await,
@@ -589,8 +617,9 @@ async fn main() -> Result<()> {
     if args.len() != 4 || args[1] != "scenario" {
         bail!(
             "usage:
-  try it:   familiar wallet <me.json> | tap <me.json> | leash <me.json> | pay <me.json> <payee> <coupons>
-                         | ask <me.json> \"<text>\" | pause|resume|recall|show <me.json>
+  try it:   familiar wallet <me.json> | tap <me.json> | leash <me.json> [--coupon <uT>]
+                         | pay <me.json> <payee> <coupons> | ask <me.json> \"<text>\"
+                         | pause|resume|recall|show <me.json> | tap-status | tap-top-up <me.json> <uT>
   author:   familiar keygen <secret-file> |              claim <proof.json> <burned-uT> | scenario <template.wasm> <report.md> | tap-new <tap.wasm> <uT>"
         );
     }
@@ -761,12 +790,14 @@ async fn main() -> Result<()> {
     let Some(leash) = sent.component.filter(|_| sent.accepted) else {
         return fail_report(report_path, &r, format!("create failed: {}", sent.reason));
     };
+    // The recall leaf names a key of its own: the owner key is public (the leash's access rules), this one is not.
+    let recall_keys = new_keys();
     let leaves = vec![
         SpendCondition::all([
             AtomicCondition::AccessRule(rule!(component(leash))),
             AtomicCondition::Covenant(Covenant::BalancePreserved(MAX_PER_PAYMENT)),
         ]),
-        key_leaf(owner.keys.pk),
+        key_leaf(recall_keys.pk),
     ];
     let budget_root = root(&leaves)?;
     let budget_auth = SpendAuthorization::Script(budget_root);
@@ -947,7 +978,7 @@ async fn main() -> Result<()> {
     let inputs = budget.iter().map(|c| recall_input(c, witness.clone())).collect();
     let recall = statement(inputs, 0, &recall_outs, None)?;
     let addrs: Vec<UtxoAddress> = budget.iter().map(Coin::address).collect();
-    let tx = build_tx(&p, max_epoch, &owner, FEE, &addrs, |b| {
+    let tx = build_tx_cosigned(&p, max_epoch, &owner, Some(&recall_keys), FEE, &addrs, |b| {
         b.stealth_transfer(TARI_TOKEN, recall)
     })?;
     let sent = send_from(&mut p, &mut owner, tx).await?;
@@ -975,6 +1006,8 @@ async fn main() -> Result<()> {
         "agent_pk": RistrettoPublicKey::from_secret_key(&agent.keys.sk).to_hex(),
         "owner_pk": RistrettoPublicKey::from_secret_key(&owner.keys.sk).to_hex(),
         "stranger_pk": RistrettoPublicKey::from_secret_key(&stranger.keys.sk).to_hex(),
+        // published after the run: until step 8 this key was nowhere on-chain (observer_view checks it)
+        "recall_pk": RistrettoPublicKey::from_secret_key(&recall_keys.sk).to_hex(),
     });
 
     // ---- part 2: an AI agent under prompt injection
@@ -1006,15 +1039,16 @@ async fn agent_demo(
     r: &mut Report,
 ) -> Result<serde_json::Value> {
     let max_epoch = Epoch(p.get_epoch().await?.as_u64() + 30);
-    let coupon_ut = cli::COUPON_UT;
+    // The owner draws the denomination at random; it stays in memory and is not written to this report.
+    let coupon_ut = cli::random_coupon_ut();
     let _ = writeln!(
         r.md,
         "\n## Part 2: an AI agent under prompt injection, in coupon mode\n\nA second leash in coupon mode: the budget is \
-         {DEMO_COUPONS} hidden coupons of one denomination ({coupon_ut} uT here; on-chain this number appears \
+         {DEMO_COUPONS} hidden coupons of one denomination (drawn at random by the owner, written nowhere, not even in this report; on-chain it appears \
          nowhere), at most {DEMO_PER_PAYMENT} coupons per payment and {DEMO_PER_WINDOW} per window, single-use payee \
          roots (the candle shop handed the owner three one-time roots). A payment spends whole coupons without a \
          covenant claim, so no amount is published. The agent obeys every payment instruction it reads, including \
-         injected ones, and turns \"pay N uT\" into N / {coupon_ut} coupons; each row quotes the text it acted on."
+         injected ones, and turns \"pay N uT\" into N / denomination coupons, rounded up; each row quotes the text it acted on."
     );
     r.section("**Setup (owner)**");
 
@@ -1044,7 +1078,8 @@ async fn agent_demo(
     let Some(leash) = sent.component.filter(|_| sent.accepted) else {
         bail!("leash 2: {}", sent.reason);
     };
-    let leaves = cli::coupon_tree(leash, owner.keys.pk);
+    let recall_keys = new_keys();
+    let leaves = cli::coupon_tree(leash, recall_keys.pk);
     let (witness, coupon_root) = script_path_witness(&leaves, &leaves[0]).map_err(|e| anyhow!("witness: {e:?}"))?;
     let siblings = witness
         .as_script_path()
@@ -1073,7 +1108,7 @@ async fn agent_demo(
         bail!("leash 2 setup: {}", sent.reason);
     }
 
-    let (first, second, new) = cli::fund_coupons(p, max_epoch, owner, coupon_root, DEMO_COUPONS).await?;
+    let (first, second, new) = cli::fund_coupons(p, max_epoch, owner, coupon_root, DEMO_COUPONS, coupon_ut).await?;
     r.row(
         "A3. owner sets aside the coupon purse",
         &first,
@@ -1167,7 +1202,7 @@ async fn agent_demo(
     let inputs = coupons.iter().map(|c| recall_input(c, witness.clone())).collect();
     let recall = statement(inputs, 0, &outs, None)?;
     let addrs: Vec<UtxoAddress> = coupons.iter().map(Coin::address).collect();
-    let tx = build_tx(p, max_epoch, owner, FEE, &addrs, |b| {
+    let tx = build_tx_cosigned(p, max_epoch, owner, Some(&recall_keys), FEE, &addrs, |b| {
         b.stealth_transfer(TARI_TOKEN, recall)
     })?;
     let sent = send_from(p, owner, tx).await?;
@@ -1192,5 +1227,7 @@ async fn agent_demo(
         "coupons_per_window": DEMO_PER_WINDOW,
         "shop_roots": shop_roots.iter().map(|h| h.to_string()).collect::<Vec<_>>(),
         "attacker_root": attacker_root.to_string(),
+        // published after the run: until C3 this key was nowhere on-chain (observer_view checks it)
+        "recall_pk": RistrettoPublicKey::from_secret_key(&recall_keys.sk).to_hex(),
     }))
 }

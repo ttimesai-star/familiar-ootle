@@ -3,10 +3,11 @@
 //! ```text
 //! familiar wallet  me.json                  # a fresh testnet key, written to me.json (never printed)
 //! familiar tap     me.json                  # a few tTARI from the Familiar tap into your account
-//! familiar leash   me.json                  # one-time owner and agent keys, a leash, 10 hidden coupons
+//! familiar leash   me.json [--coupon <uT>]  # one-time owner, agent and recall keys, a leash, 10 hidden coupons
 //! familiar pay     me.json candle-shop 2    # the agent pays two coupons to an allow-listed payee
 //! familiar ask     me.json "<any text>"     # the obedient agent reads your text and pays what it says
 //! familiar pause | resume | recall | show me.json
+//! familiar tap-status                       # what the tap holds; tap-top-up me.json <uT> refills it from your account
 //! ```
 //!
 //! The state file holds testnet secret keys and the coupons' masks: that is the whole wallet. Keep it out of any
@@ -39,8 +40,8 @@ use tari_template_lib_types::{
 };
 
 use crate::{
-    Actor, Coin, EXPLORER, FEE, Keys, Prov, Sent, agent, build_tx, coins, key_leaf, new_keys, output, recall_input,
-    root, send, send_from, statement,
+    Actor, Coin, EXPLORER, FEE, Keys, Prov, Sent, agent, build_tx, build_tx_cosigned, coins, key_leaf, new_keys,
+    output, recall_input, root, send, send_from, statement,
 };
 
 /// The Familiar template (with coupon mode) and the tTARI tap on Esmeralda, published by the author. Override with
@@ -48,16 +49,41 @@ use crate::{
 pub const DEFAULT_TEMPLATE: &str = "3f4aa7a6dfc4a5541db86ff785f98404dd24c763fdc4746d423d30ea1df31d8b";
 pub const DEFAULT_TAP: &str = "component_9c90f61b7665a6cff488d9f95f6a976c45139e49bda5a866fa9e6cb1b92849c7";
 
-/// One coupon: 0.1 tTARI. Only the owner and the agent know this number; it is never written to the chain.
-pub const COUPON_UT: u64 = 100_000;
+/// The coupon denomination is the owner's choice, kept in the wallet file only and never written to the chain. Without
+/// `--coupon`, `familiar leash` draws it at random from this range (whoever reads this code knows the range, not the
+/// value). In the range, the inbox of `agent.rs` asks for the same number of coupons as with 0.1 tTARI.
+pub const COUPON_MIN_UT: u64 = 100_000;
+pub const COUPON_MAX_UT: u64 = 124_999;
+/// The largest `--coupon` that still fits one take from the tap.
+pub const COUPON_LIMIT_UT: u64 = 140_000;
 const COUPONS: usize = 10;
 const PER_WINDOW: u64 = 6;
 const PER_PAYMENT: u64 = 4;
 const WINDOW_EPOCHS: u64 = 10_000;
 const PAYEES: [&str; 2] = ["candle-shop", "herb-shop"];
+/// What one take from the Familiar tap gives (set when the tap was created).
+const TAP_TAKE: u64 = 5 * TARI;
 /// Fees for the one-time keys: the whole leash must fit in one take from the tap (5 tTARI, minus its own fee).
 const OWNER_FEES: u64 = 10 * FEE;
 const AGENT_FEES: u64 = 20 * FEE;
+/// What `familiar leash` withdraws from the account (a public amount). Fixed, so it says nothing about the coupons:
+/// the owner's one-time key gets all but the agent's fees, and the coupons' value hides inside that hidden output.
+const LEASH_WITHDRAW: u64 = 45 * FEE;
+
+/// A random denomination in COUPON_MIN_UT..=COUPON_MAX_UT.
+pub fn random_coupon_ut() -> u64 {
+    use rand::RngExt as _;
+    rand::rng().random_range(COUPON_MIN_UT..=COUPON_MAX_UT)
+}
+
+/// The denomination from `--coupon <uT>`, or a random one.
+pub fn pick_coupon_ut(flag: Option<u64>) -> Result<u64> {
+    match flag {
+        None => Ok(random_coupon_ut()),
+        Some(c) if (1..=COUPON_LIMIT_UT).contains(&c) => Ok(c),
+        Some(c) => bail!("--coupon {c}: pick 1..={COUPON_LIMIT_UT} uT (ten coupons must fit one take from the tap)"),
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CoinJ {
@@ -86,6 +112,9 @@ pub struct State {
     leash: Option<String>,
     owner: Option<ActorJ>,
     agent: Option<ActorJ>,
+    /// The recall leaf's key, secret hex: a key of its own, so nobody can compute the leaf before the owner uses it.
+    #[serde(default)]
+    recall: Option<String>,
     coupon_ut: u64,
     coupons: Vec<CoinJ>,
     payees: Vec<PayeeJ>,
@@ -150,6 +179,10 @@ impl State {
             .context("no leash yet: run `familiar leash <state>` first")?
             .parse()
             .map_err(|e| anyhow!("leash address: {e:?}"))
+    }
+
+    fn recall_keys(&self) -> Result<Keys> {
+        keys_from_hex(self.recall.as_deref().context("no recall key in the wallet file")?)
     }
 
     fn payee_root(&self, name: &str) -> Option<Hash32> {
@@ -250,7 +283,6 @@ pub fn wallet(network: Network, path: &str) -> Result<()> {
             secret.account_secret().to_hex(),
             secret.view_only_secret().to_hex()
         ),
-        coupon_ut: COUPON_UT,
         ..State::default()
     };
     state.save(path)?;
@@ -316,13 +348,15 @@ pub async fn tap(network: Network, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// `familiar leash <state>`: one-time owner and agent keys funded from the account, a leash in coupon mode with two
-/// allow-listed payees, and COUPONS hidden coupons. Five transactions.
-pub async fn leash(network: Network, path: &str) -> Result<()> {
+/// `familiar leash <state> [--coupon <uT>]`: one-time owner and agent keys funded from the account, a leash in coupon
+/// mode with two allow-listed payees, and COUPONS hidden coupons of a denomination only this wallet knows. Five
+/// transactions.
+pub async fn leash(network: Network, path: &str, coupon: Option<u64>) -> Result<()> {
     let mut state = State::load(path)?;
     if state.leash.is_some() {
         bail!("{path} already has a leash; use a new wallet file for another one");
     }
+    let coupon_ut = pick_coupon_ut(coupon)?;
     let template = template_address()?;
     let mut p = connect(network, &state.account).await?;
     let max = max_epoch(&p).await?;
@@ -333,9 +367,9 @@ pub async fn leash(network: Network, path: &str) -> Result<()> {
     // 1. one-time keys: the owner (pays for the coupons) and the agent (pays fees only)
     let owner_keys = new_keys();
     let agent_keys = new_keys();
-    let coupons_total = COUPONS as u64 * COUPON_UT;
-    let owner_share = coupons_total + OWNER_FEES;
-    let total = owner_share + AGENT_FEES + FEE;
+    let recall_keys = new_keys();
+    let total = LEASH_WITHDRAW;
+    let owner_share = total - AGENT_FEES - FEE;
     let outs = vec![
         output(owner_share, SpendAuthorization::Key(owner_keys.pk))?,
         output(AGENT_FEES, SpendAuthorization::Key(agent_keys.pk))?,
@@ -385,8 +419,9 @@ pub async fn leash(network: Network, path: &str) -> Result<()> {
     };
     state.owner = Some(actor_to_j(&owner));
     state.agent = Some(actor_to_j(&agent));
+    state.recall = Some(recall_keys.sk.to_hex());
     state.template = Some(template.to_string());
-    state.coupon_ut = COUPON_UT;
+    state.coupon_ut = coupon_ut;
     state.save(path)?;
 
     // 2. the leash. Amount mode is unused here (no budget root): its limit of 1 uT says nothing about the coupons.
@@ -426,7 +461,7 @@ pub async fn leash(network: Network, path: &str) -> Result<()> {
     state.save(path)?;
 
     // 3. coupon mode: the coupon tree's root and the inclusion proof of its errand leaf, the counts
-    let leaves = coupon_tree(leash, owner.keys.pk);
+    let leaves = coupon_tree(leash, recall_keys.pk);
     let (witness, coupon_root) = script_path_witness(&leaves, &leaves[0]).map_err(|e| anyhow!("witness: {e:?}"))?;
     let siblings = witness
         .as_script_path()
@@ -449,7 +484,7 @@ pub async fn leash(network: Network, path: &str) -> Result<()> {
     }
 
     // 4. the coupons: COUPONS hidden UTXOs under the coupon tree, from the owner's coin
-    let (first, second, new) = fund_coupons(&mut p, max, &mut owner, coupon_root, COUPONS).await?;
+    let (first, second, new) = fund_coupons(&mut p, max, &mut owner, coupon_root, COUPONS, coupon_ut).await?;
     say("4/5 owner sets aside the coupon purse", &first);
     state.record("coupon purse", &first);
     if let Some(second) = &second {
@@ -463,22 +498,25 @@ pub async fn leash(network: Network, path: &str) -> Result<()> {
         bail!("funding the coupons was refused");
     }
     println!(
-        "leash {leash}: {COUPONS} coupons, at most {PER_PAYMENT} per payment and {PER_WINDOW} per window; payees: {}",
+        "leash {leash}: {COUPONS} coupons of {coupon_ut} uT (only {path} knows this number), at most {PER_PAYMENT} per \
+         payment and {PER_WINDOW} per window; payees: {}",
         PAYEES.join(", ")
     );
     println!("next: familiar pay {path} candle-shop 2   or   familiar ask {path} \"pay 300000 uT to candle-shop\"");
     Ok(())
 }
 
-/// The coupon tree: errand `component(<leash>)` with no covenant, recall `public_key(<owner>)`.
+/// The coupon tree: errand `component(<leash>)` with no covenant, recall `public_key(<recall key>)`. The recall key is
+/// not the owner key (that one is public in the leash's access rules), so nobody can compute the second leaf before
+/// the owner uses it.
 pub fn coupon_tree(
     leash: ComponentAddress,
-    owner: tari_template_lib_types::crypto::RistrettoPublicKeyBytes,
+    recall: tari_template_lib_types::crypto::RistrettoPublicKeyBytes,
 ) -> Vec<SpendCondition> {
-    vec![SpendCondition::access_rule(rule!(component(leash))), key_leaf(owner)]
+    vec![SpendCondition::access_rule(rule!(component(leash))), key_leaf(recall)]
 }
 
-/// Funds `n` coupons of COUPON_UT under `coupon_root` from the owner's key-path coin, in two transactions: the fee
+/// Funds `n` coupons of `coupon_ut` under `coupon_root` from the owner's key-path coin, in two transactions: the fee
 /// intent has a flat compute credit (32M points) that range proofs for 11 outputs exceed, so (1) the fee intent splits
 /// off a purse (2 outputs) and (2) the main instructions cut the purse into the coupons. Only fees are revealed.
 /// Returns the two outcomes and, when both were accepted, the coupons.
@@ -488,8 +526,9 @@ pub async fn fund_coupons(
     owner: &mut Actor,
     coupon_root: Hash32,
     n: usize,
+    coupon_ut: u64,
 ) -> Result<(Sent, Option<Sent>, Vec<Coin>)> {
-    let purse_value = n as u64 * COUPON_UT;
+    let purse_value = n as u64 * coupon_ut;
     let change = owner
         .fee_coin
         .value
@@ -527,7 +566,7 @@ pub async fn fund_coupons(
 
     let mut outs = Vec::new();
     for _ in 0..n {
-        outs.push(output(COUPON_UT, SpendAuthorization::Script(coupon_root))?);
+        outs.push(output(coupon_ut, SpendAuthorization::Script(coupon_root))?);
     }
     let st = statement(vec![StealthInputWitness::new(purse.mav())], 0, &outs, None)?;
     let new = coins(&st, &outs);
@@ -560,7 +599,7 @@ async fn agent_pays(state: &mut State, path: &str, step: &str, to: Hash32, n: u6
     let mut p = connect(Network::Esmeralda, &state.account).await?;
     let max = max_epoch(&p).await?;
     let mut agent = actor_from_j(state.agent.as_ref().context("no agent")?)?;
-    let owner = keys_from_hex(&state.owner.as_ref().context("no owner")?.sk)?;
+    let recall = state.recall_keys()?;
     let all: Vec<Coin> = state.coupons.iter().map(coin_from_j).collect::<Result<_>>()?;
     if all.is_empty() {
         bail!("no coupons left (recalled or spent)");
@@ -568,7 +607,7 @@ async fn agent_pays(state: &mut State, path: &str, step: &str, to: Hash32, n: u6
     // Ask for what the text asked for, even beyond what is left or allowed: the network decides.
     let take = (n as usize).min(all.len());
     let spent = &all[..take];
-    let leaves = coupon_tree(leash, owner.pk);
+    let leaves = coupon_tree(leash, recall.pk);
     let st = coupon_statement(&leaves, spent, SpendAuthorization::Script(to))?;
     let addrs: Vec<UtxoAddress> = spent.iter().map(Coin::address).collect();
     let tx = build_tx(&p, max, &agent, FEE, &addrs, |b| {
@@ -647,7 +686,7 @@ pub async fn owner_call(path: &str, method: &str) -> Result<()> {
 }
 
 /// `familiar recall <state>`: the owner takes every coupon back through the recall leaf, without a claim, so the
-/// amount recalled is not published.
+/// amount recalled is not published. The owner seals (and pays the fee); the recall key co-signs.
 pub async fn recall(path: &str) -> Result<()> {
     let mut state = State::load(path)?;
     let leash = state.leash()?;
@@ -658,14 +697,17 @@ pub async fn recall(path: &str) -> Result<()> {
     if all.is_empty() {
         bail!("no coupons to recall");
     }
-    let leaves = coupon_tree(leash, owner.keys.pk);
+    let recall = state.recall_keys()?;
+    let leaves = coupon_tree(leash, recall.pk);
     let (witness, _) = script_path_witness(&leaves, &leaves[1]).map_err(|e| anyhow!("witness: {e:?}"))?;
     let total: u64 = all.iter().map(|c| c.value).sum();
     let outs = vec![output(total, SpendAuthorization::Key(owner.keys.pk))?];
     let inputs = all.iter().map(|c| recall_input(c, witness.clone())).collect();
     let st = statement(inputs, 0, &outs, None)?;
     let addrs: Vec<UtxoAddress> = all.iter().map(Coin::address).collect();
-    let tx = build_tx(&p, max, &owner, FEE, &addrs, |b| b.stealth_transfer(TARI_TOKEN, st))?;
+    let tx = build_tx_cosigned(&p, max, &owner, Some(&recall), FEE, &addrs, |b| {
+        b.stealth_transfer(TARI_TOKEN, st)
+    })?;
     let sent = send_from(&mut p, &mut owner, tx).await?;
     say("recall", &sent);
     state.record("recall", &sent);
@@ -719,6 +761,72 @@ pub fn show(path: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// `familiar tap-status`: what the tap holds and how many more leashes it can fund. Read-only, no wallet needed.
+pub async fn tap_status(network: Network) -> Result<()> {
+    let tap = tap_address()?;
+    // A throwaway key: the provider wants a wallet, reading needs none.
+    let p = connect(
+        network,
+        &format!("{}:{}", new_keys().sk.to_hex(), new_keys().sk.to_hex()),
+    )
+    .await?;
+    let left = p
+        .get_account_balance(tap, TARI_TOKEN)
+        .await
+        .map_err(|e| anyhow!("indexer: {e:?}"))?;
+    let left: u64 = left.to_string().parse().context("tap balance")?;
+    println!("tap {tap}");
+    println!(
+        "holds {left} uT: {} more takes of {TAP_TAKE} uT (one take funds one leash)",
+        left / TAP_TAKE
+    );
+    println!("public state: https://ootle-indexer-a.tari.com/substates/{tap}");
+    println!("anyone can refill it: familiar tap-top-up <me.json> <uT> (from that wallet's account)");
+    Ok(())
+}
+
+/// `familiar tap-top-up <state> <uT>`: moves `amount` from the wallet's account into the tap (`top_up` is open to all).
+pub async fn tap_top_up(network: Network, path: &str, amount: u64) -> Result<()> {
+    let mut state = State::load(path)?;
+    let tap = tap_address()?;
+    let mut p = connect(network, &state.account).await?;
+    let account = p.default_signer_address().to_account_address();
+    let unsigned = Transaction::builder(p.network(), max_epoch(&p).await?)
+        .with_fee_instructions_builder(|f| {
+            f.call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(FEE)])
+                .put_last_instruction_output_on_workspace("fee")
+                .pay_fee_from_bucket("fee")
+        })
+        .call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(amount)])
+        .put_last_instruction_output_on_workspace("funds")
+        .call_method(tap, "top_up", args![Workspace("funds")])
+        .with_auto_fill_inputs()
+        .add_input(TARI_TOKEN)
+        .add_input(account)
+        .add_input(tap)
+        .build_unsigned();
+    let want = std::collections::HashSet::from([
+        WantInput::VaultForResource {
+            component_address: account,
+            resource_address: TARI_TOKEN,
+            required: true,
+        },
+        WantInput::VaultForResource {
+            component_address: tap,
+            resource_address: TARI_TOKEN,
+            required: true,
+        },
+    ]);
+    let unsigned = p
+        .resolve_input_want_list(unsigned, &want)
+        .await
+        .map_err(|e| anyhow!("resolve vaults: {e:?}"))?;
+    let sent = send_signed(&mut p, unsigned).await?;
+    say("tap top-up", &sent);
+    state.record("tap top-up", &sent);
+    state.save(path)
 }
 
 /// `familiar tap-new <tap.wasm> <amount-uT>` (author only, FAMILIAR_FUNDER): publishes the tap template and creates
@@ -798,9 +906,34 @@ mod tests {
 
     #[test]
     fn a_whole_leash_fits_in_one_take_from_the_tap() {
-        let take = 5 * TARI - FEE; // the tap pays its own fee from what it gives
-        let needed = COUPONS as u64 * COUPON_UT + OWNER_FEES + AGENT_FEES + FEE;
-        assert!(needed <= take, "{needed} > {take}");
+        let take = TAP_TAKE - FEE; // the tap pays its own fee from what it gives
+        assert!(LEASH_WITHDRAW <= take, "{LEASH_WITHDRAW} > {take}");
+        // the owner's share pays for the largest coupons plus its own fees
+        let owner_share = LEASH_WITHDRAW - AGENT_FEES - FEE;
+        assert!(COUPONS as u64 * COUPON_LIMIT_UT + OWNER_FEES <= owner_share);
+        assert!(COUPON_MAX_UT <= COUPON_LIMIT_UT);
+    }
+
+    #[test]
+    fn the_denomination_is_random_in_range_or_the_owners_choice() {
+        let drawn: Vec<u64> = (0..200).map(|_| random_coupon_ut()).collect();
+        assert!(drawn.iter().all(|c| (COUPON_MIN_UT..=COUPON_MAX_UT).contains(c)));
+        let distinct: std::collections::HashSet<_> = drawn.iter().collect();
+        assert!(distinct.len() > 150, "only {} distinct values", distinct.len());
+        assert_eq!(pick_coupon_ut(Some(77_777)).unwrap(), 77_777);
+        assert!(pick_coupon_ut(Some(0)).is_err());
+        assert!(pick_coupon_ut(Some(COUPON_LIMIT_UT + 1)).is_err());
+    }
+
+    #[test]
+    fn in_the_random_range_the_inbox_asks_for_the_same_coupons_as_with_a_tenth_of_a_tari() {
+        // The recorded story (B1 five coupons over the cap of four, B2 three, B4 four, B5 two, B6 one) holds for any
+        // denomination the client may draw.
+        for c in [COUPON_MIN_UT, 110_000, COUPON_MAX_UT] {
+            for (amount, n) in [(500_000, 5), (300_000, 3), (400_000, 4), (200_000, 2), (100_000, 1)] {
+                assert_eq!(coupons_for(amount, c), n, "{amount} at {c}");
+            }
+        }
     }
 
     #[test]
@@ -836,7 +969,8 @@ mod tests {
 
         let state = State {
             account: "a:b".into(),
-            coupon_ut: COUPON_UT,
+            recall: Some(new_keys().sk.to_hex()),
+            coupon_ut: 123_456,
             coupons: vec![j],
             payees: vec![PayeeJ {
                 name: "candle-shop".into(),
@@ -854,12 +988,12 @@ mod tests {
     #[test]
     fn the_coupon_statement_reveals_no_amount() {
         let leash: ComponentAddress = format!("component_{}", "01".repeat(32)).parse().unwrap();
-        let owner = new_keys();
-        let leaves = coupon_tree(leash, owner.pk);
+        let recall = new_keys();
+        let leaves = coupon_tree(leash, recall.pk);
         let coupons: Vec<Coin> = (0..3)
             .map(|i| Coin {
                 mask: new_keys().sk,
-                value: COUPON_UT,
+                value: 123_456,
                 commitment: PedersenCommitmentBytes::from([i as u8 + 1; 32]),
             })
             .collect();
