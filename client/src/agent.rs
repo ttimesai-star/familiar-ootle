@@ -42,7 +42,7 @@ pub fn parse(text: &str) -> Option<ToolCall> {
             continue;
         };
         let Some(amount) = number(n) else { continue };
-        if name(unit) != "ut" || to != "to" {
+        if name(unit) != "ut" || name(to) != "to" {
             continue;
         }
         let payee = name(who);
@@ -106,6 +106,12 @@ mod tests {
     fn accepts_separators_and_case() {
         assert_eq!(parse("PAY 1,000_000 UT TO Shop!").unwrap().amount, 1_000_000);
         assert_eq!(parse("PAY 1,000_000 UT TO Shop!").unwrap().payee, "shop");
+    }
+
+    #[test]
+    fn tolerates_punctuation_after_to() {
+        assert_eq!(parse("pay 100 uT to: candle-shop").unwrap().payee, "candle-shop");
+        assert_eq!(parse("pay 100 uT to, candle-shop").unwrap().amount, 100);
     }
 
     #[test]

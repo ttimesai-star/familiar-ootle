@@ -794,6 +794,36 @@ fn single_use_payee_root_cannot_be_paid_twice() {
 }
 
 #[test]
+fn single_use_root_takes_one_output_even_within_one_spend() {
+    let mut w = world();
+    let roots = vec![root_of(&[key_leaf(w.payees[0].pk)])];
+    single_use(&mut w, roots);
+    // Two outputs to the same single-use root in one spend (found in review): refused.
+    let value = w.budget[0].value;
+    let data = stealth::generate_transfer_data(
+        [budget_input(&w, 0, 0)],
+        0u64,
+        [
+            (value - 10, budget_auth(&w)),
+            (5, payee_auth(&w, 0)),
+            (5, payee_auth(&w, 0)),
+        ],
+        0u64,
+    );
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: single-use payee root paid twice in one spend",
+    );
+    // With single-use off, the same shape is accepted.
+    let tx = tx_method(&w, w.leash, "set_single_use_payees", args![false], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    let tx = pay_tx(&w, &data, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
 fn single_use_off_by_default_repeat_root_is_accepted() {
     let mut w = world();
     pay_ok(&mut w, 0, 10, 0);

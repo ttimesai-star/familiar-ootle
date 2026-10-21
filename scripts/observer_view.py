@@ -193,7 +193,7 @@ def describe_statement(d, names, visible, hidden, fee=False):
             )
             if inp["siblings"]:
                 hidden.append(
-                    f"the other {inp['siblings']} leaf(s) of that tree: only a hash is published, not what they say"
+                    f"what the other {inp['siblings']} leaf(s) of that tree say: only a hash is published (that they exist is visible)"
                 )
         else:
             visible.append(f"spends key-path UTXO `{short(inp['commitment'])}`")
@@ -237,7 +237,9 @@ def observe(step, names):
             describe_statement(json_statement(ins["StealthTransfer"]["statement"]), names, v, h, fee=True)
         elif "CallMethod" in ins:
             v.append(f"fee intent calls `{ins['CallMethod']['method']}` on {short(ins['CallMethod']['call'].get('Address'), 26)}")
-    if summary.get("outcome") != "Commit" and body.get("instructions"):
+    rejected = summary.get("outcome") != "Commit" and bool(body.get("instructions"))
+    fee_part = len(h)
+    if rejected:
         v.append(
             "**the main part was rejected**: only the fee was taken; what follows is public as submitted, but none of "
             "it happened (no UTXO was spent or created)"
@@ -264,6 +266,9 @@ def observe(step, names):
             describe_statement(json_statement(ins["StealthTransfer"]["statement"]), names, v, h)
         elif "PublishTemplate" in ins or "PublishTemplateBinary" in json.dumps(ins)[:40]:
             v.append("publishes a template (the WASM is public)")
+    if rejected:
+        # nothing of the main part reached the chain: count only the fee intent's UTXOs (found in review)
+        h = h[:fee_part] + [x for x in h[fee_part:] if not isinstance(x, tuple)]
     n_out = sum(x[1] for x in h if isinstance(x, tuple) and x[0] == "outputs")
     n_in = sum(x[1] for x in h if isinstance(x, tuple) and x[0] == "inputs")
     texts = [x for x in h if isinstance(x, str)]
@@ -354,8 +359,8 @@ def main():
         "recall leaf only when the owner recalls).",
         "",
         "Hidden: how much the budget holds and what is left of it (every UTXO amount is a commitment), who is behind "
-        "a payee root (a root is a hash of the payee's own conditions), and the existence and content of the recall "
-        "leaf until it is used. With single-use payee roots (leash 2), two payments to the same shop go to two "
+        "a payee root (a root is a hash of the payee's own conditions), and what the second leaf says (an owner "
+        "recall key) until it is used; that the tree has a second leaf is visible as one sibling hash. With single-use payee roots (leash 2), two payments to the same shop go to two "
         "unrelated roots.",
         "",
         "Leaks in this demo, by design of the demo rather than of Ootle: step 1 funds the one-time agent, owner and "

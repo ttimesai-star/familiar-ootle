@@ -68,7 +68,7 @@ def main():
     )
     end = (
         "<h1>What stayed hidden</h1><p>How much the budget held and had left. Who was behind each payee root. "
-        "That a recall path existed, until it was used.</p><p>What the network refused: every injected payment, "
+        "What the second leaf said (the owner's recall), until it was used.</p><p>What the network refused: every injected payment, "
         "with an exact reason.</p><p>Prototype, unaudited, testnet only. MIT.</p>"
         "<p><code>github.com/ttimesai-star/familiar-ootle</code></p>"
     )

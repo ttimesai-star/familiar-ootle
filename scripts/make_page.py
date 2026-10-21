@@ -236,8 +236,8 @@ def build(run: dict, repo: str, video: str | None) -> str:
 <h1>Familiar</h1>
 <p class="lead">A private allowance for AI agents on Tari Ootle. The agent can spend only up to the owner's limits,
 only to payees the owner listed, and the owner can take the budget back at any moment. The network enforces it, not
-the agent's code. An observer sees each payment, but not how much the agent holds, who is behind a payee, or that a
-recall path exists.</p>
+the agent's code. An observer sees each payment, but not how much the agent holds, who is behind a payee, or what the
+hidden second leaf (the owner's recall) says until it is used.</p>
 <nav class="links" aria-label="Project links">
 <a href="#walk-sec">Walk through the live run</a>
 <a href="#video-sec">Video</a>
@@ -327,7 +327,7 @@ also public: balance, every service it pays, who funds it.</p>
 <div class="card"><h3>Hidden</h3><ul>
 <li>how much the budget holds and has left (commitments; the recall carries no claim);</li>
 <li>who is behind a payee root;</li>
-<li>the recall leaf, and that it exists, until it is used;</li>
+<li>what the second leaf says (the owner's recall) until it is used; only its hash is published;</li>
 <li>with single-use roots: that two payments went to the same shop.</li></ul></div>
 </div>
 <p><b>Leaks, named.</b> Payment amounts are public. The window usage is public (component state). Payments of one

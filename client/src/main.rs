@@ -937,7 +937,7 @@ async fn main() -> Result<()> {
     r.row(
         "8. owner recalls the rest",
         &sent,
-        "the recall leaf was hidden until this moment; no covenant claim, so the amount recalled stays hidden",
+        "what the recall leaf says was hidden until this moment; no covenant claim, so the amount recalled stays hidden",
     );
 
     let _ = writeln!(
