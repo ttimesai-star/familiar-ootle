@@ -1038,7 +1038,7 @@ fn coupon_spend(w: &mut World, c: &Coupons, idx: &[usize], p: usize, seed: u8) -
         mask: out.witness.mask.clone(),
         value,
     };
-    let inputs = idx.iter().map(|i| coupon_input(c, *i, 0)).collect();
+    let inputs: Vec<StealthInputWitness> = idx.iter().map(|i| coupon_input(c, *i, 0)).collect();
     let spend = create_transfer_statement(inputs, Amount::zero(), [out].iter(), None).unwrap();
     (spend, payout)
 }
@@ -1404,7 +1404,7 @@ fn owner_recalls_coupons_without_revealing_how_many_were_left() {
         3 * COUPON,
         SpendAuthorization::Key(owner_pk),
     )];
-    let inputs = (0..3).map(|i| coupon_input(&c, i, 1)).collect();
+    let inputs: Vec<StealthInputWitness> = (0..3).map(|i| coupon_input(&c, i, 1)).collect();
     let recall = create_transfer_statement(inputs, Amount::zero(), outs.iter(), None).unwrap();
     assert!(recall.covenant_claims.is_empty());
     let tx = w
