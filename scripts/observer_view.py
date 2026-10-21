@@ -261,8 +261,8 @@ def observe(step, names):
                             "amount**: nothing in this transaction says how much moved"
                         )
                         h.append(
-                            f"how much this payment moved: {len(d['inputs'])} coupon(s) of a denomination that is "
-                            "written nowhere on-chain"
+                            f"the value of the {len(d['inputs'])} coupon(s) named: their denomination is written "
+                            "nowhere on-chain"
                         )
                 elif d:
                     v.append(d["error"])

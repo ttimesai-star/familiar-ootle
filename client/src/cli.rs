@@ -45,8 +45,8 @@ use crate::{
 
 /// The Familiar template (with coupon mode) and the tTARI tap on Esmeralda, published by the author. Override with
 /// FAMILIAR_TEMPLATE / FAMILIAR_TAP (for example after publishing your own copy).
-pub const DEFAULT_TEMPLATE: &str = "";
-pub const DEFAULT_TAP: &str = "";
+pub const DEFAULT_TEMPLATE: &str = "3f4aa7a6dfc4a5541db86ff785f98404dd24c763fdc4746d423d30ea1df31d8b";
+pub const DEFAULT_TAP: &str = "component_9c90f61b7665a6cff488d9f95f6a976c45139e49bda5a866fa9e6cb1b92849c7";
 
 /// One coupon: 0.1 tTARI. Only the owner and the agent know this number; it is never written to the chain.
 pub const COUPON_UT: u64 = 100_000;
@@ -168,8 +168,16 @@ impl State {
     }
 }
 
+/// The variable if it is set and not empty, else the default.
+fn env_or(name: &str, default: &str) -> String {
+    std::env::var(name)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
 fn template_address() -> Result<TemplateAddress> {
-    let t = std::env::var("FAMILIAR_TEMPLATE").unwrap_or_else(|_| DEFAULT_TEMPLATE.to_string());
+    let t = env_or("FAMILIAR_TEMPLATE", DEFAULT_TEMPLATE);
     if t.trim().is_empty() {
         bail!("no template address: set FAMILIAR_TEMPLATE (see README, 'Try it')");
     }
@@ -177,7 +185,7 @@ fn template_address() -> Result<TemplateAddress> {
 }
 
 fn tap_address() -> Result<ComponentAddress> {
-    let t = std::env::var("FAMILIAR_TAP").unwrap_or_else(|_| DEFAULT_TAP.to_string());
+    let t = env_or("FAMILIAR_TAP", DEFAULT_TAP);
     if t.trim().is_empty() {
         bail!("no tap address: set FAMILIAR_TAP (see README, 'Try it')");
     }
@@ -298,11 +306,11 @@ pub async fn tap(network: Network, path: &str) -> Result<()> {
     if !sent.accepted {
         bail!("tap refused");
     }
-    let balance = p
-        .get_account_balance(account, TARI_TOKEN)
-        .await
-        .map_err(|e| anyhow!("balance: {e:?}"))?;
-    println!("account balance: {balance} uT");
+    // The indexer may not have the new account yet; the balance is informative only.
+    match p.get_account_balance(account, TARI_TOKEN).await {
+        Ok(balance) => println!("account balance: {balance} uT"),
+        Err(_) => println!("account balance: not readable from the indexer yet (the tap transaction was accepted)"),
+    }
     println!("next: familiar leash {path}");
     Ok(())
 }
@@ -786,6 +794,14 @@ pub async fn tap_new(network: Network, wasm_path: &str, amount: u64) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn built_in_addresses_parse() {
+        let t: Result<TemplateAddress, _> = DEFAULT_TEMPLATE.parse();
+        assert!(t.is_ok());
+        let c: Result<ComponentAddress, _> = DEFAULT_TAP.parse();
+        assert!(c.is_ok());
+    }
 
     #[test]
     fn coupons_round_up_and_never_zero() {
