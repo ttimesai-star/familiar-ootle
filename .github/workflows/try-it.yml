@@ -1,7 +1,7 @@
 name: try-it
 
 # Manual only, Esmeralda testnet. Walks the "Try it" path of the README exactly as a new user would, with a fresh
-# wallet: wallet -> tap -> leash -> pay -> ask (prompt injection) -> pause -> pay (refused) -> recall, and checks the
+# wallet: tap-status -> wallet -> tap -> leash -> pay -> ask (prompt injection) -> pause -> pay (refused) -> recall, and checks the
 # network's decision at every step. Optionally publishes the tTARI tap first (author, needs FAMILIAR_FUNDER).
 on:
   workflow_dispatch:
@@ -79,6 +79,7 @@ jobs:
             if [ "$reason" != "-" ]; then echo "$out" | grep -qF "$reason" || { echo "::error::expected reason: $reason"; exit 1; }; fi
           }
           start=$(date +%s)
+          $F tap-status
           $F wallet me.json
           $F tap me.json
           $F leash me.json
@@ -91,6 +92,7 @@ jobs:
           expect REFUSED "leash is paused by the owner" $F pay me.json candle-shop 1
           expect ACCEPTED - $F recall me.json
           $F show me.json | grep -v "^  " || true
+          $F tap-status
           end=$(date +%s)
           echo "elapsed: $((end - start)) s from a fresh wallet to a recalled leash" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: summary

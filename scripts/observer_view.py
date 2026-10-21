@@ -48,6 +48,10 @@ class Names:
         for key, label in [("agent_pk", "agent key"), ("owner_pk", "owner key"), ("stranger_pk", "stranger key")]:
             if ids.get(key):
                 self.labels[ids[key]] = label
+        if ids.get("recall_pk"):
+            self.labels[ids["recall_pk"]] = "recall key (leash 1)"
+        if (ids.get("agent_demo") or {}).get("recall_pk"):
+            self.labels[ids["agent_demo"]["recall_pk"]] = "recall key (leash 2)"
         if ids.get("budget_root"):
             self.labels[ids["budget_root"]] = "budget root (leash 1)"
         for i, r in enumerate(ids.get("payee_roots") or []):
@@ -213,6 +217,29 @@ def describe_statement(d, names, visible, hidden, fee=False):
         visible.append(f"revealed input: {d['revealed_in']} uT")
 
 
+# raw transaction JSON by tx id, to find where a key first appears on-chain
+RAW = {}
+
+
+def cosigners(t):
+    """Public keys of the extra signatures of a transaction (besides the seal)."""
+    found = []
+
+    def go(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k == "signatures" and isinstance(v, list):
+                    found.extend(x.get("public_key") for x in v if isinstance(x, dict) and x.get("public_key"))
+                else:
+                    go(v)
+        elif isinstance(o, list):
+            for x in o:
+                go(x)
+
+    go(t)
+    return found
+
+
 def observe(step, names):
     tx_id = step.get("tx_id")
     out = {"tx_id": tx_id, "visible": [], "hidden": [], "error": None}
@@ -224,6 +251,7 @@ def observe(step, names):
     if not t:
         out["error"] = f"indexer: {data.get('error') if isinstance(data, dict) else data}"
         return out
+    RAW[tx_id] = json.dumps(t)
     body = t["transaction"]["V1"]["body"]["transaction"]
     signer = t["transaction"]["V1"].get("seal_signature", {}).get("public_key")
     summary = t.get("summary") or {}
@@ -234,6 +262,8 @@ def observe(step, names):
     v.append(f"outcome **{summary.get('outcome')}**, fee {summary.get('total_fees_paid')} uT, at {summary.get('finalized_at')}")
     if signer:
         v.append(f"sealed by {names.of(signer)}")
+    for pk in cosigners(t):
+        v.append(f"also signed by {names.of(pk)}")
     for ins in body.get("fee_instructions", []):
         if "StealthTransfer" in ins:
             describe_statement(json_statement(ins["StealthTransfer"]["statement"]), names, v, h, fee=True)
@@ -369,6 +399,37 @@ def main():
             "",
         ]
         run.setdefault("component_state", {})[label] = state
+    first_seen = []
+    for label, pk, addr in [
+        ("leash 1", ids.get("recall_pk"), ids.get("leash")),
+        ("leash 2", demo.get("recall_pk"), demo.get("leash")),
+    ]:
+        if not pk:
+            continue
+        hits = [x for x in steps if x.get("tx_id") and pk in RAW.get(x["tx_id"], "")]
+        state, _ = component_state(addr) if addr else (None, None)
+        in_state = state is not None and pk in json.dumps(state)
+        where = f"first in step **{hits[0]['step']}**" if hits else "in no transaction of the run"
+        first_seen.append(
+            f"- {label}: recall key `{short(pk)}` appears {where} ({len(hits)} transaction(s) in all); "
+            f"in the leash's public state: **{'yes' if in_state else 'no'}**"
+        )
+        run.setdefault("recall_key_check", {})[label] = {
+            "first_step": hits[0]["step"] if hits else None,
+            "transactions": len(hits),
+            "in_leash_state": in_state,
+        }
+    if first_seen:
+        md += [
+            "## Where the recall keys first appear",
+            "",
+            "Each tree's recall leaf names a random key of its own (not the owner key, which is in the leash's access "
+            "rules). Searched in every transaction of the run and in the leash's state, after the run (the run's ids "
+            "publish the key only now, for this check):",
+            "",
+            *first_seen,
+            "",
+        ]
     md += [
         "## Summary",
         "",
@@ -378,15 +439,15 @@ def main():
         "recall leaf only when the owner recalls).",
         "",
         "Hidden: how much the budget holds and what is left of it (every UTXO amount is a commitment), who is behind "
-        "a payee root (a root is a hash of the payee's own conditions), and what the second leaf says (an owner "
-        "recall key) until it is used; that the tree has a second leaf is visible as one sibling hash. With single-use payee roots (leash 2), two payments to the same shop go to two "
+        "a payee root (a root is a hash of the payee's own conditions), and what the second leaf says (a recall "
+        "key of its own, which appears on-chain only in the recall) until it is used; that the tree has a second leaf is visible as one sibling hash. With single-use payee roots (leash 2), two payments to the same shop go to two "
         "unrelated roots.",
         "",
-        "Coupon mode (leash 2): no payment publishes an amount. A payment spends whole coupons through the leaf "
+        "Coupon mode (leash 2): no payment publishes a uT amount. A payment spends whole coupons through the leaf "
         "`component(<leash>)` without a covenant claim and sends all of their value to allow-listed roots; the leash "
         "counts coupons, not uT. An observer sees how many coupons each payment spent and how many were funded, so "
         "relative sizes are visible (\"this payment was 3 coupons, that one 2\"); the denomination, and so every "
-        "absolute amount, is not.",
+        "absolute amount, is not: the owner drew it at random and it is in no transaction and not in the run's report.",
         "",
         "Leaks in this demo, by design of the demo rather than of Ootle: step 1 funds the one-time agent, owner and "
         "stranger keys from one funder account in a single transaction, so an observer links those keys to that "

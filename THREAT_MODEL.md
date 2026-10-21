@@ -7,7 +7,7 @@ Every "Refused" row is an engine test in `tests/leash.rs` that asserts the exact
 
 | Actor | Holds | Trusted for |
 |---|---|---|
-| Owner | one-time owner key (recall leaf + owner-only methods) | everything: it funds the budget and can take it back |
+| Owner | one-time owner key (owner-only methods; public in the access rules) and a separate recall key (the recall leaf; on-chain nowhere until used) | everything: it funds the budget and can take it back |
 | Agent | one-time agent key (the `pay` rule) | nothing beyond the leash: it is assumed compromised |
 | Payee | its own condition tree (root on the allow-list) | receiving payments |
 | Observer | the public chain | nothing |
@@ -33,12 +33,13 @@ template and submit any transaction.
 | Pay a single-use payee root a second time | a paid root is struck off the allow-list | Refused: `familiar: output to a payee not on the leash` | `single_use_payee_root_cannot_be_paid_twice` |
 | Put two outputs on one single-use root in a single spend (found in review 21.10) | each single-use root takes one output | Refused: `familiar: single-use payee root paid twice in one spend` | `single_use_root_takes_one_output_even_within_one_spend` |
 | Change the rule, the payees, the budget root, single-use mode, or pause/resume | owner-only method rules | Refused: `Access Denied` | `admin_methods_are_owner_only` |
-| Use the recall leaf | `public_key(<owner>)` | Refused: `Access Denied: native.stealth_utxo.spend` | `stranger_cannot_use_the_recall_leaf` |
+| Use the recall leaf | `public_key(<recall key>)`: neither the agent nor a stranger nor the owner key alone holds it | Refused: `Access Denied: native.stealth_utxo.spend` | `stranger_cannot_use_the_recall_leaf`, `the_owner_key_alone_cannot_use_the_recall_leaf`, `the_owner_key_alone_cannot_recall_coupons` |
 
 ### Coupon mode
 
-The budget is coupons: stealth UTXOs of one denomination `d` (known to the owner and the agent only) under a second
-tree, `errand = component(<leash>)` (no covenant) and `recall = public_key(<owner>)`. `pay_coupons` counts coupons.
+The budget is coupons: stealth UTXOs of one denomination `d` (drawn by the owner, kept off-chain, known to the owner
+and the agent only) under a second tree, `errand = component(<leash>)` (no covenant) and `recall = public_key(<recall
+key>)`. `pay_coupons` counts coupons.
 
 | Attack | Defence | Result | Test |
 |---|---|---|---|
@@ -54,8 +55,8 @@ tree, `errand = component(<leash>)` (no covenant) and `recall = public_key(<owne
 | A stranger or the owner calls `pay_coupons`; pay while paused | agent-only rule; pause switch | Refused: `Access Denied`, `familiar: leash is paused by the owner` | `only_the_agent_pays_coupons_and_not_while_paused` |
 | Change the coupon rule, or make the coupon root a payee or the budget root | owner-only; `set_coupons` checks the roots; a shorter window keeps what was spent | Refused: `Access Denied`, `familiar: coupon root cannot be a payee`, `... the budget root` | `set_coupons_is_owner_only_and_checks_its_roots`, `changing_the_coupon_rule_keeps_what_was_spent` |
 
-The coupon tree is computable by anyone who knows the leash and the owner key (both public), so anyone can lock a UTXO
-under the coupon root. Such a UTXO is the creator's own money; the agent's wallet never selects it, and if it were
+The coupon root is public (the `set_coupons` argument), so anyone can lock a UTXO under it, though nobody but the owner
+can compute its second leaf. Such a UTXO is the creator's own money; the agent's wallet never selects it, and if it were
 spent through the leash it would go to an allow-listed payee and count against the window. The leash cannot check
 that a coupon is worth exactly `d`: the owner mints them. The bound is therefore `per_window x d` per window and
 `per_payment x d` per payment, for the coupons the owner funded.
@@ -78,27 +79,42 @@ network refuses each injected payment with the reasons above.
 | The owner shrinks the window mid-window, resetting what was spent (found in review) | `set_policy` restarts the window at the current epoch and carries `spent` over | `shrinking_the_window_keeps_what_was_spent` |
 | A leash without a budget root | `pay` refuses | `pay_without_a_budget_root_is_refused` |
 
-## Privacy: what leaks
+## Privacy: what is visible, what is hidden
 
-Checked against the public indexer for every transaction of the Esmeralda run (`docs/observer_view.md`).
+Checked against the public indexer for every transaction of the Esmeralda run (`docs/observer_view.md`). The same table
+is in the README and on the page.
+
+| | Visible to anyone | Hidden |
+|---|---|---|
+| A payment | that it happened, its epoch, the leash, the one-time agent key that signed it, its network fee | |
+| Amount mode (`pay`) | the exact µT each payment moves (the covenant claim) | |
+| Coupon mode (`pay_coupons`) | how many coupons a payment spends; how many were minted, spent and recalled, so how many are left | what a coupon is worth, so what a payment moved: the owner draws the denomination and it is written nowhere |
+| The budget | how many budget UTXOs or coupons exist | how much they hold and what is left, in µT (Pedersen commitments; the recall carries no claim) |
+| Payees | the allow-listed payee roots | who is behind a root; with single-use roots, that two payments went to the same shop |
+| The recall leaf | that a second leaf exists (one sibling hash in every payment) | what it says, until the owner uses it: it names a recall key of its own, random and nowhere else on-chain (not the owner key of the access rules) |
+| The leash's state | the rule, the window usage (µT or coupons), the roots, paused or not | no balance: the budget is not in the component |
+
+### What leaks, why, and the mitigation
 
 | Leaks | Why | Mitigation |
 |---|---|---|
 | Amount of each payment (amount mode, `pay`) | the covenant allowance is enforced on a cleartext outflow (the claim in the `pay` argument) | coupon mode: `pay_coupons` publishes no claim and no amount |
-| Coupon mode: how many coupons each payment spends, how many were funded, coupons spent in the window | the number of inputs and outputs is public, and so is the counter in the component | relative sizes are visible ("3 coupons, then 2"), absolute ones are not: the denomination is written nowhere |
+| Coupon mode: how many coupons each payment spends, how many were funded and recalled, so how many are left; coupons spent in the window | the number of inputs and outputs is public, and so is the counter in the component | relative sizes are visible ("3 coupons, then 2"), absolute ones are not: the owner draws the denomination (in "Try it" at random from 100 000–124 999 uT, or `--coupon`) and writes it nowhere on-chain |
 | Window usage (`spent`), the rule, the budget root and payee roots | component state is public on Ootle | `status` has no "remaining" field; the budget itself is not in the component |
 | Payee root, linkable across payments to the same payee | allow-list entries are fixed roots | `set_single_use_payees(true)`: a paid root is struck off, each payment uses a fresh root (`single_use_payee_root_cannot_be_paid_twice`) |
 | All payments of one leash are linked | the same component and the same agent signing key | one leash per purpose; none inside a leash |
-| The agent's and owner's one-time keys, linked to the funder | in the demo, step 1 funds them from one account in one transaction; the owner key is also in the access rules | fund one-time keys from separate stealth outputs |
+| The agent's and owner's one-time keys, linked to the funder | in the demo, step 1 funds them from one account in one transaction; the owner key is also in the access rules | fund one-time keys from separate stealth outputs; the recall leaf names a separate key, so the public owner key says nothing about it |
+| The recall leaf, computable before use (found by judge 3, 21.10) | it named the owner key, which is public in the leash's access rules | fixed: a random recall key of its own, kept in the owner's wallet; the recall is sealed by the owner and co-signed by it (`the_owner_key_alone_cannot_use_the_recall_leaf`) |
+| Coupon denomination, in "Try it" (found by judge 3, 21.10) | it was a constant of the public client; the account withdraw was `10 x d + fees` | fixed: drawn per leash, kept in `me.json`; a fixed 4.5 tTARI withdraw |
 | What was left of the budget, at recall | the wallet builds a covenant claim for any script-path input that names its root (found 21.10) | fixed: the recall input names no root, no claim is built (`owner_recall_without_a_claim_does_not_reveal_what_is_left`) |
 | Timing | public chain | none |
 
-Not leaked: how much the budget holds or has left, who funded it beyond the one-time key, who the payees are behind
-their roots, and what the second leaf of the budget tree says (the owner's recall) until it is used. That a second
-leaf exists is visible: every payment publishes one sibling hash.
+Not leaked: how much the budget holds or has left in µT, who funded it beyond the one-time key, who the payees are
+behind their roots, and what the second leaf of each tree says (the owner's recall) until it is used: it names a random
+key that appears nowhere else on-chain. That a second leaf exists is visible: every payment publishes one sibling hash.
 
 ## Out of scope
 
-Side channels on the client machine; loss of the owner key (the budget is then stuck under the errand leaf, spendable
-only within the leash rules); front-running of a pay statement (it can only pay the same allow-listed payee); the
+Side channels on the client machine; loss of the recall key (the budget is then stuck under the errand leaf, spendable
+only within the leash rules; the owner key can still pause the leash); front-running of a pay statement (it can only pay the same allow-listed payee); the
 engine and the covenant implementation themselves.

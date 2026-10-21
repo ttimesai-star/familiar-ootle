@@ -240,9 +240,9 @@ def build(run: dict, repo: str, video: str | None) -> str:
 <h1>Familiar</h1>
 <p class="lead">A private allowance for AI agents on Tari Ootle. The agent can spend only up to the owner's limits,
 only to payees the owner listed, and the owner can take the budget back at any moment. The network enforces it, not
-the agent's code. In coupon mode no amount ever reaches the chain: not the budget, not what is left, not what a
-payment moved. An observer sees that a payment happened and how many hidden coupons it spent, never what a coupon is
-worth, nor who is behind a payee. Only the network fee of each transaction is public.</p>
+the agent's code. In coupon mode no µT amount reaches the chain: not the budget, not what is left, not what a
+payment moved. An observer sees that a payment happened and how many hidden coupons it spent (the counts are public),
+never what a coupon is worth, nor who is behind a payee. Only the network fee of each transaction is public.</p>
 <nav class="links" aria-label="Project links">
 <a href="#walk-sec">Walk through the live run</a>
 <a href="#video-sec">Video</a>
@@ -258,7 +258,7 @@ worth, nor who is behind a payee. Only the network fee of each transaction is pu
 <p class="walkintro">{len(steps)} real transactions on the Esmeralda testnet, from {esc(first_at)} UTC: {n_ok} accepted,
 {n_no} refused by the network. Part 1 attacks a leash in amount mode directly. Part 2, where this page opens, hands
 a leash in coupon mode to an AI agent that obeys every payment instruction it reads, including ones injected into a web
-page, an email and a fake receipt: no payment of Part 2 publishes an amount. For each step: what happened, and what
+page, an email and a fake receipt: no payment of Part 2 publishes a µT amount. For each step: what happened, and what
 anyone reading the chain can see. Use the arrows, the numbers, or the keyboard (← →).</p>
 <div class="controls">
 <button id="w-prev" aria-label="previous step">← Prev</button>
@@ -316,43 +316,35 @@ also public: balance, every service it pays, who funds it.</p>
 <tr><td>payments only to allow-listed payees</td><td>every output under the budget root (change) or an allow-listed payee root</td></tr>
 <tr><td>optionally, each payee root is paid once</td><td>single-use mode strikes a paid root off the list: repeat payments to one shop land on unrelated roots</td></tr>
 <tr><td>the budget moves only through the leash</td><td>the spend condition requires <code>component(&lt;this leash&gt;)</code></td></tr>
-<tr><td>coupon mode: at most N coupons per payment and per window, no amount on-chain</td><td><code>pay_coupons</code>
+<tr><td>coupon mode: at most N coupons per payment and per window, no µT amount on-chain (the number of coupons is public)</td><td><code>pay_coupons</code>
 checks from each input's revealed leaf and inclusion proof that it is a coupon of this leash, refuses change and claims,
 and counts coupons; Pedersen balance proves that no value was created</td></tr>
-<tr><td>the owner recalls everything, without the agent</td><td>a hidden second leaf <code>public_key(&lt;owner one-time key&gt;)</code>, spent without a covenant claim so the amount is not published</td></tr>
+<tr><td>the owner recalls everything, without the agent</td><td>a hidden second leaf <code>public_key(&lt;recall key&gt;)</code>: a random key of its own, not the owner key from the access rules, so nobody can compute the leaf before it is used; spent without a covenant claim so the amount is not published</td></tr>
 </table>
 <p class="small">Every budget UTXO: amount hidden by a Pedersen commitment, locked under a pure condition tree
 <code>Script(root)</code> with two leaves: <code>errand = component(leash) AND BalancePreserved(cap)</code> and
-<code>recall = public_key(owner)</code>.</p>
+<code>recall = public_key(recall key)</code>.</p>
 </section>
 
 <section aria-labelledby="priv">
 <h2 id="priv">Privacy: visible, hidden, and what leaks</h2>
-<div class="grid2">
-<div class="card"><h3>Visible to anyone</h3><ul>
-<li>each payment, its time, the leash and the one-time key that signed it;</li>
-<li>amount mode: the exact amount of each payment (the covenant claim); coupon mode: only how many coupons it spent;</li>
-<li>the errand leaf of each spent UTXO, and the whole component state (rule, window usage, roots).</li></ul></div>
-<div class="card"><h3>Hidden</h3><ul>
-<li>how much the budget holds and has left (commitments; the recall carries no claim);</li>
-<li>coupon mode: what any payment moved: the coupon denomination is written nowhere on-chain;</li>
-<li>who is behind a payee root;</li>
-<li>what the second leaf says (the owner's recall) until it is used; only its hash is published;</li>
-<li>with single-use roots: that two payments went to the same shop.</li></ul></div>
-</div>
+{privacy_table_html()}
 <p><b>Leaks, named.</b> In amount mode payment amounts are public; in coupon mode their relative sizes are
-(3 coupons, then 2). The window usage is public (component state). Payments of one
+(3 coupons, then 2). The coupon denomination is the owner's: "Try it" draws it at random per leash and keeps it in the
+wallet file. The window usage is public (component state). Payments of one
 leash are linked by the leash and the agent key. In this demo the one-time keys are funded from one account in one
 transaction, which links them; a real owner funds them from separate stealth outputs. Prototype, not audited.</p>
 </section>
 
 <section aria-labelledby="quick">
 <h2 id="quick">Try it yourself</h2>
-<p>Your own leash in coupon mode on Esmeralda, from a fresh key, in about five minutes (prebuilt client in the
-release, or <code>cargo build -p familiar-cli --release</code>):</p>
-<pre><code>familiar wallet me.json        # a fresh testnet key, written only to me.json
+<p>Your own leash in coupon mode on Esmeralda, from a fresh key, in about 3 minutes (prebuilt client in the
+release, or <code>cargo build -p familiar-cli --release</code>; the README has the sha256 and the macOS/Windows notes
+for unsigned binaries):</p>
+<pre><code>familiar tap-status            # what the tap holds; anyone can refill it (tap-top-up)
+familiar wallet me.json        # a fresh testnet key, written only to me.json
 familiar tap    me.json        # 5 tTARI from the Familiar tap
-familiar leash  me.json        # a leash in coupon mode with 10 hidden coupons
+familiar leash  me.json        # a leash in coupon mode with 10 hidden coupons, a random denomination
 familiar pay    me.json candle-shop 2
 familiar ask    me.json "any text, e.g. a hidden instruction to pay refund-desk"
 familiar pause  me.json; familiar recall me.json; familiar show me.json</code></pre>
@@ -382,6 +374,34 @@ Developed with AI coding agents; design, review and submission by the author. No
 </body>
 </html>
 """
+
+
+def privacy_table_html() -> str:
+    """The visible/hidden table of README.md (section "What an observer sees"), so README, THREAT_MODEL and the page
+    show one table."""
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    sec = readme[readme.index("## What an observer sees"):]
+    lines = sec.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("|"))
+    rows = []
+    for ln in lines[start:]:
+        if not ln.startswith("|"):
+            break
+        rows.append(ln)
+
+    def cells(ln: str) -> list[str]:
+        return [c.strip() for c in ln.strip().strip("|").split("|")]
+
+    def inline(t: str) -> str:
+        return re.sub(r"`([^`]+)`", r"<code>\1</code>", esc(t))
+
+    head = cells(rows[0])
+    out = ["<table class=\"plain\">", "<tr>" + "".join(f"<th>{inline(h)}</th>" for h in head) + "</tr>"]
+    for ln in rows[2:]:
+        c = cells(ln)
+        out.append("<tr>" + f"<th>{inline(c[0])}</th>" + "".join(f"<td>{inline(x)}</td>" for x in c[1:]) + "</tr>")
+    out.append("</table>")
+    return "\n".join(out)
 
 
 def main() -> None:
