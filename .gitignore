@@ -9,3 +9,6 @@ secrets/
 # internal (Russian) spec lives outside the repo: ../SPEC_*.md
 docs/SPEC_*
 __pycache__/
+
+# wallet files of "Try it" (testnet secret keys)
+me.json
