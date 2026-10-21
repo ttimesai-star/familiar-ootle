@@ -44,8 +44,8 @@ code and not by a server:
    *Actions → claim-and-run → Run workflow* with `skip_claim = true`. The job builds the template, publishes it, runs
    both parts and prints the report in the job summary; the artifact holds the report, the observer view and the
    template wasm. Without `FAMILIAR_FUNDER` the client tries the shared faucet, which is often empty.
-4. **Use the prebuilt template.** Every CI run uploads `familiar.min.wasm` (artifact `familiar-wasm`, sha256 in the
-   log); the run above used `sha256 `b4cbeeee5382dbeabc17c381d64003baaf42e3969dc5589ff613a42c1fe997c5``.
+4. **Use the prebuilt template.** Release [`esmeralda-2026-10-21`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21)
+   has the exact `familiar.min.wasm` of the run; every CI run also uploads one (artifact `familiar-wasm`). sha256 of the run: `b4cbeeee5382dbeabc17c381d64003baaf42e3969dc5589ff613a42c1fe997c5`.
 5. **Engine tests** (about 2 GB of RAM): `cargo test --workspace` (Rust stable, `wasm32-unknown-unknown` target).
 
 ## Why
