@@ -120,7 +120,13 @@ mod familiar {
                     SpendAuthorization::Script(root) if *root == budget_root => {}
                     SpendAuthorization::Script(root) if self.payees.contains(root) => {
                         payee_outputs += 1;
-                        if !paid_roots.contains(root) {
+                        if paid_roots.contains(root) {
+                            // A single-use root takes one output, even within one spend (found in review).
+                            assert!(
+                                !self.single_use_payees,
+                                "familiar: single-use payee root paid twice in one spend"
+                            );
+                        } else {
                             paid_roots.push(*root);
                         }
                     }

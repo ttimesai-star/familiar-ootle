@@ -31,6 +31,7 @@ template and submit any transaction.
 | Lie about the amount | the amount is read from `covenant_claims`, which the engine proves; an understated claim fails natively | covered by the engine's own covenant tests | - |
 | Leave the claim out, so the window is charged nothing | `pay` refuses a spend without a covenant claim (the errand covenant would also fail) | Refused: `familiar: spend without a covenant claim` | `pay_without_a_covenant_claim_is_refused` |
 | Pay a single-use payee root a second time | a paid root is struck off the allow-list | Refused: `familiar: output to a payee not on the leash` | `single_use_payee_root_cannot_be_paid_twice` |
+| Put two outputs on one single-use root in a single spend (found in review 21.10) | each single-use root takes one output | Refused: `familiar: single-use payee root paid twice in one spend` | `single_use_root_takes_one_output_even_within_one_spend` |
 | Change the rule, the payees, the budget root, single-use mode, or pause/resume | owner-only method rules | Refused: `Access Denied` | `admin_methods_are_owner_only` |
 | Use the recall leaf | `public_key(<owner>)` | Refused: `Access Denied: native.stealth_utxo.spend` | `stranger_cannot_use_the_recall_leaf` |
 
@@ -67,7 +68,8 @@ Checked against the public indexer for every transaction of the Esmeralda run (`
 | Timing | public chain | none |
 
 Not leaked: how much the budget holds or has left, who funded it beyond the one-time key, who the payees are behind
-their roots, and that a recall path exists until it is used.
+their roots, and what the second leaf of the budget tree says (the owner's recall) until it is used. That a second
+leaf exists is visible: every payment publishes one sibling hash.
 
 ## Out of scope
 
