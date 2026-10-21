@@ -65,6 +65,7 @@ const PAYEES: [&str; 2] = ["candle-shop", "herb-shop"];
 #[cfg(test)]
 const TAP_TAKE: u64 = 5 * TARI;
 /// Fees for the one-time keys: the whole leash must fit in one take from the tap (5 tTARI, minus its own fee).
+#[cfg(test)]
 const OWNER_FEES: u64 = 10 * FEE;
 const AGENT_FEES: u64 = 20 * FEE;
 /// What `familiar leash` withdraws from the account (a public amount). Fixed, so it says nothing about the coupons:

@@ -21,8 +21,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # pinned: the published template wasm (sha256 653ebb3f...) was built with rustc 1.99.1; another rustc gives
+      # another hash for the same source
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.99.1
           targets: wasm32-unknown-unknown
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
@@ -30,6 +33,11 @@ jobs:
           workspaces: |
             templates/familiar -> target
             templates/tap -> target
+      - name: rustfmt (template, tap, workspace)
+        run: |
+          (cd templates/familiar && cargo fmt --check)
+          (cd templates/tap && cargo fmt --check)
+          cargo fmt --all --check
       - name: build template (release wasm)
         working-directory: templates/familiar
         run: cargo build --release --target wasm32-unknown-unknown

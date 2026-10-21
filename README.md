@@ -92,6 +92,9 @@ dependencies) with the tools `pay_through_leash` and `leash_status`; it calls `f
 receipt by itself, and obeyed the email that impersonated its owner: 500000 uT to candle-shop, refused by the
 network (`5 coupons in one payment, the cap is 4`). The model's judgement stopped three attacks; the leash stopped the
 one that got through it.
+This LLM run was made with the client of release `esmeralda-2026-10-21-coupons`, before cycle 3: there the recall leaf
+was the owner key and the coupon denomination a constant. The template and the payment path the model used
+(`pay_coupons`, the caps, the allow-list) are the same as now; only recall and the denomination changed since.
 
 ## Quickstart (no keys, no Rust)
 
@@ -109,12 +112,12 @@ one that got through it.
    *Actions → claim-and-run → Run workflow* with `skip_claim = true`. The job builds the template, publishes it, runs
    both parts and prints the report in the job summary; the artifact holds the report, the observer view and the
    template wasm. Without `FAMILIAR_FUNDER` the client tries the shared faucet, which is often empty.
-4. **Use the prebuilt template.** Release [`esmeralda-2026-10-21`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21)
-   has the template wasm of the previous run (amount mode only); release
-   [`esmeralda-2026-10-21-coupons`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21-coupons)
-   the client before cycle 3, and [`esmeralda-2026-10-21-recall-key`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21-recall-key)
-   the exact `familiar.min.wasm` of the latest run and the current client binaries; every CI run also uploads the wasm
-   (artifact `familiar-wasm`). sha256 of the latest run: `653ebb3f83cdcd38fd4b2f8175b7e266afa4fc00754162c7b2b088183cf886ca`.
+4. **Use the prebuilt template.** Release [`esmeralda-2026-10-21-recall-key`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21-recall-key)
+   has the exact `familiar.min.wasm` of the latest run and the current client binaries; every CI run also uploads the
+   wasm (artifact `familiar-wasm`). sha256 of the latest run: `653ebb3f83cdcd38fd4b2f8175b7e266afa4fc00754162c7b2b088183cf886ca`.
+   To rebuild it byte for byte: rustc 1.99.1 (pinned in `ci.yml`; another rustc gives another hash for the same source),
+   `cargo build --release --target wasm32-unknown-unknown` in `templates/familiar`, then `wasm-opt` (binaryen 119) with
+   the flags in `ci.yml`. Earlier releases are listed, with what changed, in [`docs/releases.md`](docs/releases.md).
 5. **Engine tests** (about 2 GB of RAM): `cargo test --workspace` (Rust stable, `wasm32-unknown-unknown` target).
 
 ## Why
@@ -126,6 +129,14 @@ chain the agent's wallet is also a billboard: its balance, every service it pays
 a well-funded agent a target.
 
 Familiar keeps the leash on-chain and the secrets off it.
+
+**Familiar and Ghostline.** Ghostline, another October entry, is about *how* an agent pays: per its public post,
+off-chain cumulative vouchers in a channel opened with each service, with spending limits and human approval in a
+policy engine on the payer's side and a local decision audit. Familiar is about *how much and to whom* an agent may
+pay at all, and puts that check in the network: the window limit, the per-payment cap, the allow-list and the pause
+are refused or accepted by the Ootle engine, so they hold even when the agent's host, its software and its key are
+compromised, and the budget itself is hidden UTXOs that only the leash can spend. (Written from Ghostline's forum post;
+we did not read its code.)
 
 ## Part 2 of the run: an AI agent under prompt injection, in coupon mode
 

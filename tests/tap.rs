@@ -1,6 +1,6 @@
 //! Engine tests for the tTARI tap (templates/tap), the helper that lets anyone try Familiar on Esmeralda.
 
-use tari_template_lib::types::{Amount, ComponentAddress, constants::XTR};
+use tari_template_lib::types::{Amount, ComponentAddress, constants::TARI_TOKEN};
 use tari_template_test_tooling::{
     TemplateTest,
     crypto::RistrettoSecretKey,
@@ -18,7 +18,7 @@ fn tap_world(funds: u64) -> (TemplateTest, ComponentAddress, ComponentAddress, R
     let template = test.get_template_address("FamiliarTap");
     let tx = test
         .transaction()
-        .call_method(account, "withdraw", args![XTR, Amount::from(funds)])
+        .call_method(account, "withdraw", args![TARI_TOKEN, Amount::from(funds)])
         .put_last_instruction_output_on_workspace("funds")
         .call_function(template, "new", args![Workspace("funds"), Amount::from(PER_TAKE), 2u64])
         .finish()
