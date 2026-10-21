@@ -1073,30 +1073,24 @@ async fn agent_demo(
         bail!("leash 2 setup: {}", sent.reason);
     }
 
-    let (st, new) = cli::fund_coupons(owner, coupon_root, DEMO_COUPONS)?;
-    let tx = Transaction::builder(p.network(), max_epoch)
-        .with_fee_instructions_builder(|f| {
-            f.stealth_transfer(TARI_TOKEN, st)
-                .put_last_instruction_output_on_workspace("fees")
-                .pay_fee_from_bucket("fees")
-        })
-        .with_auto_fill_inputs()
-        .add_input(TARI_TOKEN)
-        .add_input(owner.fee_coin.address())
-        .build_unsigned();
-    let dry = tx.clone().with_dry_run(true).finish().seal(&owner.keys.sk);
-    let tx = tx.finish().seal(&owner.keys.sk);
-    let sent = send(p, tx, dry).await?;
+    let (first, second, new) = cli::fund_coupons(p, max_epoch, owner, coupon_root, DEMO_COUPONS).await?;
     r.row(
-        &format!("A3. fund {DEMO_COUPONS} hidden coupons"),
-        &sent,
+        "A3. owner sets aside the coupon purse",
+        &first,
+        "one hidden UTXO split off the owner's coin (the fee intent cannot afford range proofs for 11 outputs)",
+    );
+    let Some(second) = second else {
+        bail!("leash 2 purse: {}", first.reason);
+    };
+    r.row(
+        &format!("A4. cut the purse into {DEMO_COUPONS} hidden coupons"),
+        &second,
         "each coupon is a Pedersen commitment: their number is visible, their value is not",
     );
-    if !sent.accepted {
-        bail!("leash 2 funding: {}", sent.reason);
+    if new.is_empty() {
+        bail!("leash 2 coupons: {}", second.reason);
     }
-    owner.fee_coin = new[DEMO_COUPONS].clone();
-    let mut coupons: Vec<Coin> = new[..DEMO_COUPONS].to_vec();
+    let mut coupons: Vec<Coin> = new;
 
     r.section("**The agent reads its inbox**");
     // The agent's address book: "candle-shop" is the shop's next unused root, "candle-shop-receipt-1" the root of the

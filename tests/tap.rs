@@ -23,12 +23,11 @@ fn tap_world(funds: u64) -> (TemplateTest, ComponentAddress, ComponentAddress, R
         .call_function(template, "new", args![Workspace("funds"), Amount::from(PER_TAKE), 2u64])
         .finish()
         .seal(&sk);
-    let result = test.execute_expect_success(tx, vec![proof]);
-    let tap = result
-        .finalize
-        .execution_results
+    test.execute_expect_success(tx, vec![proof]);
+    let tap = test
+        .return_values()
         .iter()
-        .find_map(|r| r.decode::<ComponentAddress>().ok())
+        .find_map(|v| v.decoded::<ComponentAddress>().ok())
         .expect("tap address");
     (test, tap, account, sk)
 }

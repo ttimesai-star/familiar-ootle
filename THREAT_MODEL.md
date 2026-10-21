@@ -35,6 +35,31 @@ template and submit any transaction.
 | Change the rule, the payees, the budget root, single-use mode, or pause/resume | owner-only method rules | Refused: `Access Denied` | `admin_methods_are_owner_only` |
 | Use the recall leaf | `public_key(<owner>)` | Refused: `Access Denied: native.stealth_utxo.spend` | `stranger_cannot_use_the_recall_leaf` |
 
+### Coupon mode
+
+The budget is coupons: stealth UTXOs of one denomination `d` (known to the owner and the agent only) under a second
+tree, `errand = component(<leash>)` (no covenant) and `recall = public_key(<owner>)`. `pay_coupons` counts coupons.
+
+| Attack | Defence | Result | Test |
+|---|---|---|---|
+| More than `per_window` coupons in a window | the leash charges the number of inputs against the coupon window | Refused: `familiar: window limit exceeded: 4 of 4 spent, 0 left, payment of 1 refused (coupons)` | `coupon_window_counts_coupons_then_reopens` |
+| More than `per_payment` coupons in one payment | input count cap | Refused: `familiar: 3 coupons in one payment, the cap is 2` | `coupons_over_the_per_payment_cap_are_refused` |
+| Keep change under the coupon root, merging two coupons into one worth `2d` (which would later count as one) | a coupon payment has no change: every output goes to an allow-listed payee | Refused: `familiar: a coupon payment goes to allow-listed payees only, no change` | `coupon_change_and_unlisted_payees_are_refused` |
+| Pay an unlisted payee | same | Refused (same message) | same |
+| Pass a budget UTXO off as a coupon | the revealed leaf and its inclusion proof must be the coupon tree's | Refused: `familiar: input is not a coupon of this leash` | `a_budget_utxo_is_not_a_coupon` |
+| A UTXO under another tree that also has the leaf `component(<leash>)` | the inclusion proof (siblings) must be the coupon tree's, so the root is | Refused (same message) | `a_utxo_with_the_coupon_leaf_under_another_tree_is_not_a_coupon` |
+| Move coupons uncounted through `pay` (coupons carry no covenant, `pay` counts only claims) (found while adding coupon mode) | `pay` refuses any input without a `BalancePreserved` covenant | Refused: `familiar: pay spends budget UTXOs only, coupons go through pay_coupons` | `coupons_cannot_be_moved_through_pay` |
+| Spend coupons outside the leash | errand leaf `component(<leash>)` | Refused by the engine (`No active call frame`) | `a_coupon_spent_outside_the_leash_is_refused` |
+| Publish the amount (a claim) | `pay_coupons` refuses a statement with a covenant claim | Refused: `familiar: a coupon payment reveals no amount (covenant claim present)` | `a_coupon_payment_with_a_claim_is_refused` |
+| A stranger or the owner calls `pay_coupons`; pay while paused | agent-only rule; pause switch | Refused: `Access Denied`, `familiar: leash is paused by the owner` | `only_the_agent_pays_coupons_and_not_while_paused` |
+| Change the coupon rule, or make the coupon root a payee or the budget root | owner-only; `set_coupons` checks the roots; a shorter window keeps what was spent | Refused: `Access Denied`, `familiar: coupon root cannot be a payee`, `... the budget root` | `set_coupons_is_owner_only_and_checks_its_roots`, `changing_the_coupon_rule_keeps_what_was_spent` |
+
+The coupon tree is computable by anyone who knows the leash and the owner key (both public), so anyone can lock a UTXO
+under the coupon root. Such a UTXO is the creator's own money; the agent's wallet never selects it, and if it were
+spent through the leash it would go to an allow-listed payee and count against the window. The leash cannot check
+that a coupon is worth exactly `d`: the owner mints them. The bound is therefore `per_window x d` per window and
+`per_payment x d` per payment, for the coupons the owner funded.
+
 What a compromised agent *can* do: spend up to `limit` per window to allow-listed payees until the owner pauses the
 leash or recalls the budget. That is the bound the leash promises.
 
@@ -59,7 +84,8 @@ Checked against the public indexer for every transaction of the Esmeralda run (`
 
 | Leaks | Why | Mitigation |
 |---|---|---|
-| Amount of each payment | the covenant allowance is enforced on a cleartext outflow (the claim in the `pay` argument) | none in this version |
+| Amount of each payment (amount mode, `pay`) | the covenant allowance is enforced on a cleartext outflow (the claim in the `pay` argument) | coupon mode: `pay_coupons` publishes no claim and no amount |
+| Coupon mode: how many coupons each payment spends, how many were funded, coupons spent in the window | the number of inputs and outputs is public, and so is the counter in the component | relative sizes are visible ("3 coupons, then 2"), absolute ones are not: the denomination is written nowhere |
 | Window usage (`spent`), the rule, the budget root and payee roots | component state is public on Ootle | `status` has no "remaining" field; the budget itself is not in the component |
 | Payee root, linkable across payments to the same payee | allow-list entries are fixed roots | `set_single_use_payees(true)`: a paid root is struck off, each payment uses a fresh root (`single_use_payee_root_cannot_be_paid_twice`) |
 | All payments of one leash are linked | the same component and the same agent signing key | one leash per purpose; none inside a leash |

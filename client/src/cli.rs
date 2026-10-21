@@ -308,7 +308,7 @@ pub async fn tap(network: Network, path: &str) -> Result<()> {
 }
 
 /// `familiar leash <state>`: one-time owner and agent keys funded from the account, a leash in coupon mode with two
-/// allow-listed payees, and COUPONS hidden coupons. Four transactions.
+/// allow-listed payees, and COUPONS hidden coupons. Five transactions.
 pub async fn leash(network: Network, path: &str) -> Result<()> {
     let mut state = State::load(path)?;
     if state.leash.is_some() {
@@ -360,7 +360,7 @@ pub async fn leash(network: Network, path: &str) -> Result<()> {
         .await
         .map_err(|e| anyhow!("resolve account vault: {e:?}"))?;
     let sent = send_signed(&mut p, unsigned).await?;
-    say("1/4 one-time owner and agent keys", &sent);
+    say("1/5 one-time owner and agent keys", &sent);
     state.record("keys", &sent);
     if !sent.accepted {
         state.save(path)?;
@@ -398,7 +398,7 @@ pub async fn leash(network: Network, path: &str) -> Result<()> {
         b.call_function(template, "new", new_args)
     })?;
     let sent = send_from(&mut p, &mut owner, tx).await?;
-    say("2/4 create the leash", &sent);
+    say("2/5 create the leash", &sent);
     state.record("create leash", &sent);
     state.owner = Some(actor_to_j(&owner));
     let Some(leash) = sent.component.filter(|_| sent.accepted) else {
@@ -431,7 +431,7 @@ pub async fn leash(network: Network, path: &str) -> Result<()> {
         )
     })?;
     let sent = send_from(&mut p, &mut owner, tx).await?;
-    say("3/4 coupon mode on", &sent);
+    say("3/5 coupon mode on", &sent);
     state.record("set coupons", &sent);
     state.owner = Some(actor_to_j(&owner));
     state.save(path)?;
@@ -440,19 +440,18 @@ pub async fn leash(network: Network, path: &str) -> Result<()> {
     }
 
     // 4. the coupons: COUPONS hidden UTXOs under the coupon tree, from the owner's coin
-    let (st, new) = fund_coupons(&owner, coupon_root, COUPONS)?;
-    let tx = owner_stealth_tx(&p, max, &owner, st)?;
-    let sent = send(&mut p, tx.0, tx.1).await?;
-    say("4/4 fund the coupons", &sent);
-    state.record("fund coupons", &sent);
-    if sent.accepted {
-        owner.fee_coin = new[COUPONS].clone();
-        state.coupons = new[..COUPONS].iter().map(coin_to_j).collect();
+    let (first, second, new) = fund_coupons(&mut p, max, &mut owner, coupon_root, COUPONS).await?;
+    say("4/5 owner sets aside the coupon purse", &first);
+    state.record("coupon purse", &first);
+    if let Some(second) = &second {
+        say("5/5 cut the purse into hidden coupons", second);
+        state.record("cut coupons", second);
     }
+    state.coupons = new.iter().map(coin_to_j).collect();
     state.owner = Some(actor_to_j(&owner));
     state.save(path)?;
-    if !sent.accepted {
-        bail!("funding the coupons was refused: {}", sent.reason);
+    if new.is_empty() {
+        bail!("funding the coupons was refused");
     }
     println!(
         "leash {leash}: {COUPONS} coupons, at most {PER_PAYMENT} per payment and {PER_WINDOW} per window; payees: {}",
@@ -470,37 +469,35 @@ pub fn coupon_tree(
     vec![SpendCondition::access_rule(rule!(component(leash))), key_leaf(owner)]
 }
 
-/// `n` coupons of COUPON_UT under `coupon_root` plus the owner's change, from the owner's key-path coin. Only the fee
-/// is revealed.
-pub fn fund_coupons(owner: &Actor, coupon_root: Hash32, n: usize) -> Result<(StealthTransferStatement, Vec<Coin>)> {
+/// Funds `n` coupons of COUPON_UT under `coupon_root` from the owner's key-path coin, in two transactions: the fee
+/// intent has a flat compute credit (32M points) that range proofs for 11 outputs exceed, so (1) the fee intent splits
+/// off a purse (2 outputs) and (2) the main instructions cut the purse into the coupons. Only fees are revealed.
+/// Returns the two outcomes and, when both were accepted, the coupons.
+pub async fn fund_coupons(
+    p: &mut Prov,
+    max: Epoch,
+    owner: &mut Actor,
+    coupon_root: Hash32,
+    n: usize,
+) -> Result<(Sent, Option<Sent>, Vec<Coin>)> {
+    let purse_value = n as u64 * COUPON_UT;
     let change = owner
         .fee_coin
         .value
-        .checked_sub(n as u64 * COUPON_UT + FEE)
+        .checked_sub(purse_value + FEE)
         .context("owner coin too small for the coupons")?;
-    let mut outs = Vec::new();
-    for _ in 0..n {
-        outs.push(output(COUPON_UT, SpendAuthorization::Script(coupon_root))?);
-    }
-    outs.push(output(change, SpendAuthorization::Key(owner.keys.pk))?);
+    let outs = vec![
+        output(purse_value, SpendAuthorization::Key(owner.keys.pk))?,
+        output(change, SpendAuthorization::Key(owner.keys.pk))?,
+    ];
     let st = statement(
         vec![StealthInputWitness::new(owner.fee_coin.mav())],
         0,
         &outs,
         Some(RevealedOutput::new(Amount::from(FEE), owner.keys.pk)),
     )?;
-    let new = coins(&st, &outs);
-    Ok((st, new))
-}
-
-/// A plain stealth transfer that spends the owner's fee coin itself (its fee is revealed by the same statement).
-fn owner_stealth_tx(
-    p: &Prov,
-    max: Epoch,
-    owner: &Actor,
-    st: StealthTransferStatement,
-) -> Result<(Transaction, Transaction)> {
-    let tx = Transaction::builder(p.network(), max)
+    let split = coins(&st, &outs);
+    let unsigned = Transaction::builder(p.network(), max)
         .with_fee_instructions_builder(|f| {
             f.stealth_transfer(TARI_TOKEN, st)
                 .put_last_instruction_output_on_workspace("fees")
@@ -510,8 +507,27 @@ fn owner_stealth_tx(
         .add_input(TARI_TOKEN)
         .add_input(owner.fee_coin.address())
         .build_unsigned();
-    let dry = tx.clone().with_dry_run(true).finish().seal(&owner.keys.sk);
-    Ok((tx.finish().seal(&owner.keys.sk), dry))
+    let dry = unsigned.clone().with_dry_run(true).finish().seal(&owner.keys.sk);
+    let tx = unsigned.finish().seal(&owner.keys.sk);
+    let first = send(p, tx, dry).await?;
+    if !first.accepted {
+        return Ok((first, None, Vec::new()));
+    }
+    let purse = split[0].clone();
+    owner.fee_coin = split[1].clone();
+
+    let mut outs = Vec::new();
+    for _ in 0..n {
+        outs.push(output(COUPON_UT, SpendAuthorization::Script(coupon_root))?);
+    }
+    let st = statement(vec![StealthInputWitness::new(purse.mav())], 0, &outs, None)?;
+    let new = coins(&st, &outs);
+    let tx = build_tx(p, max, owner, FEE, &[purse.address()], |b| {
+        b.stealth_transfer(TARI_TOKEN, st)
+    })?;
+    let second = send_from(p, owner, tx).await?;
+    let coupons = if second.accepted { new } else { Vec::new() };
+    Ok((first, Some(second), coupons))
 }
 
 /// The pay_coupons statement: `coupons` spent through the errand leaf without a claim, all of their value in one
