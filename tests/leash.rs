@@ -2,7 +2,8 @@
 //!
 //! Every leash UTXO commits a pure condition tree:
 //!   errand = component(<leash>) AND BalancePreserved(MAX_PER_PAYMENT)
-//!   recall = public_key(<owner one-time key>)
+//!   recall = public_key(<recall one-time key>): a key of its own, not the owner key from the leash's access rules,
+//!            so nobody can compute this leaf before the owner uses it
 //! Payees are stealth outputs locked under the payee's own tree; the leash allow-lists those roots.
 //!
 //! Each refusal test checks the exact reason, so a test cannot pass because something unrelated failed.
@@ -54,6 +55,8 @@ struct World {
     leash: ComponentAddress,
     agent: Keys,
     owner: Keys,
+    /// The key of the recall leaf. It appears nowhere on-chain until the owner recalls.
+    recall: Keys,
     stranger: Keys,
     payees: Vec<Keys>,
     leaves: Vec<SpendCondition>,
@@ -119,6 +122,7 @@ fn world() -> World {
     let agent = keys(&mut test, 1);
     let owner = keys(&mut test, 2);
     let stranger = keys(&mut test, 3);
+    let recall = keys(&mut test, 7);
     let payees = vec![keys(&mut test, 4), keys(&mut test, 5)];
     let payee_roots: Vec<Hash32> = payees.iter().map(|p| root_of(&[key_leaf(p.pk)])).collect();
 
@@ -128,7 +132,7 @@ fn world() -> World {
         args![resource, agent.pk, owner.pk, LIMIT, WINDOW, payee_roots],
         vec![],
     );
-    let leaves = vec![errand(leash), key_leaf(owner.pk)];
+    let leaves = vec![errand(leash), key_leaf(recall.pk)];
 
     let mut w = World {
         test,
@@ -137,6 +141,7 @@ fn world() -> World {
         leash,
         agent,
         owner,
+        recall,
         stranger,
         payees,
         leaves,
@@ -516,6 +521,7 @@ fn owner_recalls_everything_and_the_agent_is_left_with_nothing() {
         .transaction()
         .stealth_transfer(w.resource, recall.statement)
         .finish()
+        .add_signer(&w.owner.pk, &w.recall.sk)
         .seal(&w.owner.sk.clone());
     w.test.execute_expect_success(tx, vec![]);
 
@@ -540,6 +546,29 @@ fn stranger_cannot_use_the_recall_leaf() {
         .stealth_transfer(w.resource, recall.statement)
         .finish()
         .seal(&w.stranger.sk.clone());
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, "Access Denied: native.stealth_utxo.spend");
+}
+
+/// The owner key is public (it is in the leash's access rules); the recall leaf does not name it, so knowing the owner
+/// key says nothing about the leaf, and the owner key alone cannot spend through it.
+#[test]
+fn the_owner_key_alone_cannot_use_the_recall_leaf() {
+    let mut w = world();
+    assert_ne!(w.leaves[1], key_leaf(w.owner.pk));
+    let total: u64 = w.budget.iter().map(|u| u.value).sum();
+    let recall = stealth::generate_transfer_data(
+        [budget_input(&w, 0, 1), budget_input(&w, 1, 1)],
+        0u64,
+        [(total, OutputAuthSpec::KeyPath(w.owner.pk))],
+        0u64,
+    );
+    let tx = w
+        .test
+        .transaction()
+        .stealth_transfer(w.resource, recall.statement)
+        .finish()
+        .seal(&w.owner.sk.clone());
     let reason = w.test.execute_expect_failure(tx, vec![]);
     assert_reject_reason(&reason, "Access Denied: native.stealth_utxo.spend");
 }
@@ -921,6 +950,7 @@ fn owner_recall_without_a_claim_does_not_reveal_what_is_left() {
         .transaction()
         .stealth_transfer(w.resource, recall)
         .finish()
+        .add_signer(&w.owner.pk, &w.recall.sk)
         .seal(&w.owner.sk.clone());
     w.test.execute_expect_success(tx, vec![]);
 }
@@ -993,7 +1023,7 @@ fn mint_under(w: &mut World, leaves: &[SpendCondition], values: &[u64]) -> Vec<U
 /// COUPONS_PER_PAYMENT per payment.
 fn coupon_world(n: usize) -> (World, Coupons) {
     let mut w = world();
-    let leaves = coupon_tree(w.leash, w.owner.pk);
+    let leaves = coupon_tree(w.leash, w.recall.pk);
     let tx = tx_method(
         &w,
         w.leash,
@@ -1282,7 +1312,7 @@ fn only_the_agent_pays_coupons_and_not_while_paused() {
 #[test]
 fn pay_coupons_before_set_coupons_is_refused() {
     let mut w = world();
-    let leaves = coupon_tree(w.leash, w.owner.pk);
+    let leaves = coupon_tree(w.leash, w.recall.pk);
     let coins = mint_under(&mut w, &leaves, &[COUPON]);
     let c = Coupons { leaves, coins };
     let (spend, _) = coupon_spend(&mut w, &c, &[0], 0, 50);
@@ -1292,7 +1322,7 @@ fn pay_coupons_before_set_coupons_is_refused() {
 #[test]
 fn set_coupons_is_owner_only_and_checks_its_roots() {
     let mut w = world();
-    let leaves = coupon_tree(w.leash, w.owner.pk);
+    let leaves = coupon_tree(w.leash, w.recall.pk);
     let tx = tx_method(
         &w,
         w.leash,
@@ -1412,10 +1442,34 @@ fn owner_recalls_coupons_without_revealing_how_many_were_left() {
         .transaction()
         .stealth_transfer(w.resource, recall)
         .finish()
+        .add_signer(&w.owner.pk, &w.recall.sk)
         .seal(&w.owner.sk.clone());
     w.test.execute_expect_success(tx, vec![]);
     // The agent has nothing left to spend.
     let (spend, _) = coupon_spend(&mut w, &c, &[0], 0, 51);
     let tx = pay_coupons_tx(&w, &spend, &w.agent.sk.clone());
     w.test.execute_expect_failure(tx, vec![]);
+}
+
+#[test]
+fn the_owner_key_alone_cannot_recall_coupons() {
+    let (mut w, c) = coupon_world(2);
+    assert_ne!(c.leaves[1], key_leaf(w.owner.pk));
+    let owner_pk = w.owner.pk;
+    let outs = vec![witness_output(
+        &mut w,
+        60,
+        2 * COUPON,
+        SpendAuthorization::Key(owner_pk),
+    )];
+    let inputs: Vec<StealthInputWitness> = (0..2).map(|i| coupon_input(&c, i, 1)).collect();
+    let recall = create_transfer_statement(inputs, Amount::zero(), outs.iter(), None).unwrap();
+    let tx = w
+        .test
+        .transaction()
+        .stealth_transfer(w.resource, recall)
+        .finish()
+        .seal(&w.owner.sk.clone());
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, "Access Denied: native.stealth_utxo.spend");
 }

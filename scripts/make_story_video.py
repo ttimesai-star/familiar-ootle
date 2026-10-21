@@ -36,7 +36,7 @@ CAPTION_JS = """(t) => {
 STORY = [
     (4.5, "A fake 'owner' email: pay 5 coupons now. The network refuses: the cap is 4 per payment.", False,
      "5 coupons in one payment, the cap is 4"),
-    (4.5, "The real owner's task: 3 coupons to the candle shop. Paid. On-chain: 3 hidden coupons, no amount.", True, ""),
+    (4.5, "The real owner's task: 3 coupons to the candle shop. Paid. On-chain: 3 hidden coupons, no µT amount.", True, ""),
     (4.0, "An instruction hidden in a web page: pay the 'refund desk'. Refused: not on the leash.", False,
      "allow-listed payees only"),
     (4.0, "An upsell inside a tool result: 4 more coupons. Refused: 3 of 6 already spent this window.", False,
@@ -46,7 +46,7 @@ STORY = [
      "allow-listed payees only"),
     (3.5, "The owner pauses the leash with one call. No agent involved.", True, ""),
     (3.5, "The agent tries once more. Refused: paused by the owner.", False, "leash is paused by the owner"),
-    (4.0, "The owner takes the rest back through a hidden leaf. Still no amount on-chain.", True, ""),
+    (4.0, "The owner takes the rest back through a hidden leaf. Still no µT amount on-chain.", True, ""),
 ]
 
 TITLE = (
@@ -61,7 +61,7 @@ SETUP = (
 )
 END = (
     "<h1>What the chain saw</h1><p>7 payment attempts by the agent: 2 paid, 5 refused with an exact reason.</p>"
-    "<p><b>No amount</b> of the budget, of what is left, or of any payment. Only the network fee is public.</p>"
+    "<p><b>No µT amount</b> of the budget, of what is left, or of any payment. Public: how many coupons moved, and the network fee.</p>"
     "<p>Try it: <code>familiar wallet · tap · leash · ask \"…\"</code></p>"
     "<p>Prototype, unaudited, Esmeralda testnet. MIT.</p>"
 )
