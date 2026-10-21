@@ -9,7 +9,7 @@
 
 ![Walk-through of the Esmeralda run: each frame is one real transaction, left what happened, right what an observer sees](docs/walkthrough.gif)
 
-Video (MP4, 103 s, silent): [`docs/walkthrough.mp4`](docs/walkthrough.mp4).
+Video (MP4, 107 s, silent): [`docs/walkthrough.mp4`](docs/walkthrough.mp4).
 
 A witch's familiar runs errands. It can spend, but only what the leash allows, only at the shops it is sent to,
 and the witch can call it home at any moment. Anyone watching the street sees each errand and what it cost. Nobody can
@@ -104,7 +104,7 @@ The leash bounds the damage of a compromised agent and hides the purse; it does 
 
 ## Live on the Esmeralda testnet
 
-Latest run: Esmeralda, epoch 12545, GitHub Actions run [39549341697](https://github.com/ttimesai-star/familiar-ootle/actions/runs/39549341697), 26 transactions (16 accepted, 10 refused by the network). [`docs/esmeralda_run.md`](docs/esmeralda_run.md) has every step with explorer links. Part 1:
+Latest run: Esmeralda, epoch 12545, GitHub Actions run [39549341697](https://github.com/ttimesai-star/familiar-ootle/actions/runs/39549341697) on commit 051061c (the template of `main` is byte-identical: same wasm sha256), 26 transactions (16 accepted, 10 refused by the network). [`docs/esmeralda_run.md`](docs/esmeralda_run.md) has every step with explorer links. Part 1:
 the template was published, a leash created, its budget funded as two hidden UTXOs, the agent paid two allow-listed
 payees, then five attacks were submitted and each was refused on-chain by the mechanism that should refuse it:
 
@@ -162,7 +162,7 @@ recall = public_key(<owner one-time key>)
 
 ### Found in review
 
-An external review (Jules, Gemini) of the 19.10 snapshot found two medium issues. Both were first reproduced as
+An external review (Jules, Gemini; all reports in [`docs/reviews/`](docs/reviews/)) of the 19.10 snapshot found two medium issues. Both were first reproduced as
 passing proof-of-concept tests on the engine (CI run 39209529251), then fixed with red-then-green tests:
 
 1. After a budget-root rotation, one spend could take UTXOs from the old and the new root; the covenant is checked
@@ -175,7 +175,7 @@ Found while writing the observer view (21.10): the owner recall published the ex
 because the wallet builds a covenant claim for every script-path input that names its root. Fix: the recall input
 does not name the root, so no claim is built; covered by `owner_recall_without_a_claim_does_not_reveal_what_is_left`.
 
-A second Jules review (21.10, `review_notes` outside the repo) of the privacy changes: one medium, three low, all
+A second Jules review (21.10, [`docs/reviews/`](docs/reviews/)) of the privacy changes: one medium, three low, all
 fixed. Medium: a single spend could put two outputs on the same single-use root (refused now,
 `single_use_root_takes_one_output_even_within_one_spend`). Low: the observer view counted UTXOs of rejected
 instructions as hidden on-chain UTXOs; the agent parser missed "to:"; the docs said the recall path's existence is
@@ -201,5 +201,6 @@ docs/                evidence: the latest Esmeralda run (Markdown + JSON) and th
 
 ## License
 
-MIT. All code in this repository was written for this contest, starting 18 October 2026. Developed with AI coding
-agents; the idea, design decisions, review and submission are the author's.
+MIT. All code in this repository is new, written for this contest from 18 October 2026, except the L1 burn-proof
+converter `client/src/l1proof.rs`, adapted from tari-ootle (BSD-3-Clause, notice in [`THIRD_PARTY.md`](THIRD_PARTY.md)).
+Developed with AI coding agents; the idea, design decisions, review and submission are the author's.
