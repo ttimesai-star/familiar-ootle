@@ -129,6 +129,12 @@ mod familiar {
             }
             assert!(payee_outputs > 0, "familiar: no payee output");
 
+            // The amount is what the covenant proves. A spend built without a claim would charge nothing to the
+            // window; the errand leaf's covenant refuses it anyway, this says why in plain words.
+            assert!(
+                !spend.covenant_claims.is_empty(),
+                "familiar: spend without a covenant claim"
+            );
             let mut amount = Amount::zero();
             for claim in &spend.covenant_claims {
                 amount = amount

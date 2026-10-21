@@ -50,7 +50,8 @@ use tari_template_lib_types::{
     crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes, UtxoTag},
     rule,
     stealth::{
-        AtomicCondition, Covenant, RevealedOutput, SpendAuthorization, SpendCondition, StealthTransferStatement,
+        AtomicCondition, Covenant, RevealedOutput, SpendAuthorization, SpendCondition, SpendWitness,
+        StealthTransferStatement,
     },
 };
 
@@ -373,6 +374,16 @@ fn pay_statement(
     )?;
     let new = coins(&st, &outs);
     Ok((st, new))
+}
+
+/// A recall input: the recall leaf has no covenant, so no claim is needed, and without the committed root the wallet
+/// builds none. A claim would publish the exact amount leaving the tree, that is, what was left of the budget.
+fn recall_input(coin: &Coin, witness: SpendWitness) -> StealthInputWitness {
+    StealthInputWitness {
+        mask_and_value: coin.mav(),
+        witness,
+        condition_root: None,
+    }
 }
 
 fn funder_secret(network: Network, v: &str) -> Result<OotleSecretKey> {
@@ -910,12 +921,12 @@ async fn main() -> Result<()> {
     }
 
     // ---- 8. owner recall through the hidden leaf
-    let (witness, broot) = script_path_witness(&leaves, &leaves[1]).map_err(|e| anyhow!("witness: {e:?}"))?;
+    let (witness, _) = script_path_witness(&leaves, &leaves[1]).map_err(|e| anyhow!("witness: {e:?}"))?;
     let total: u64 = budget.iter().map(|c| c.value).sum();
     let recall_outs = vec![output(total, SpendAuthorization::Key(owner.keys.pk))?];
     let inputs = budget
         .iter()
-        .map(|c| StealthInputWitness::with_script_path(c.mav(), witness.clone(), broot))
+        .map(|c| recall_input(c, witness.clone()))
         .collect();
     let recall = statement(inputs, 0, &recall_outs, None)?;
     let addrs: Vec<UtxoAddress> = budget.iter().map(Coin::address).collect();
@@ -926,7 +937,7 @@ async fn main() -> Result<()> {
     r.row(
         "8. owner recalls the rest",
         &sent,
-        "the recall leaf was hidden until this moment",
+        "the recall leaf was hidden until this moment; no covenant claim, so the amount recalled stays hidden",
     );
 
     let _ = writeln!(
@@ -1145,10 +1156,10 @@ async fn agent_demo(
         Some(("message after the pause", text)),
     );
 
-    let (witness, broot) = script_path_witness(&leaves, &leaves[1]).map_err(|e| anyhow!("witness: {e:?}"))?;
+    let (witness, _) = script_path_witness(&leaves, &leaves[1]).map_err(|e| anyhow!("witness: {e:?}"))?;
     let outs = vec![output(budget.value, SpendAuthorization::Key(owner.keys.pk))?];
     let recall = statement(
-        vec![StealthInputWitness::with_script_path(budget.mav(), witness, broot)],
+        vec![recall_input(&budget, witness)],
         0,
         &outs,
         None,

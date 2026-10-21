@@ -8,11 +8,11 @@
 //! Each refusal test checks the exact reason, so a test cannot pass because something unrelated failed.
 
 use tari_template_lib::types::{
-    Amount, ComponentAddress, Hash32, ResourceAddress,
+    Amount, ComponentAddress, EncryptedData, Hash32, ResourceAddress,
     bytes::Bytes,
-    crypto::RistrettoPublicKeyBytes,
+    crypto::{RistrettoPublicKeyBytes, UtxoTag},
     rule,
-    stealth::{AtomicCondition, Covenant, SpendCondition},
+    stealth::{AtomicCondition, Covenant, SpendAuthorization, SpendCondition},
 };
 use tari_template_test_tooling::{
     TemplateTest,
@@ -25,7 +25,10 @@ use tari_template_test_tooling::{
         stealth::{self, StealthSecretTransferData},
     },
     transaction::{Transaction, args, builder::named_args::NamedArg},
-    wallet_crypto::{MaskAndValue, stealth::condition_root},
+    wallet_crypto::{
+        MaskAndValue, OutputWitness, StealthInputWitness, StealthOutputWitness,
+        stealth::{condition_root, create_transfer_statement, script_path_witness},
+    },
 };
 
 const LIMIT: u64 = 100;
@@ -836,4 +839,75 @@ fn a_refused_payment_does_not_consume_a_single_use_root() {
         &format!("covenant not satisfied: BalancePreserved({MAX_PER_PAYMENT})"),
     );
     pay_ok(&mut w, 0, 10, 0);
+}
+
+// ---------------------------------------------------------------- privacy: a recall without a covenant claim
+
+/// A stealth output for a hand-built statement (masks and nonces from deterministic test keys).
+fn witness_output(w: &mut World, seed: u8, value: u64, auth: SpendAuthorization) -> StealthOutputWitness {
+    let (mask, _) = w.test.new_key_pair(seed);
+    let (_, nonce) = w.test.new_key_pair(seed.wrapping_add(100));
+    StealthOutputWitness {
+        witness: OutputWitness {
+            amount: value,
+            mask,
+            sender_public_nonce: nonce,
+            minimum_value_promise: 0,
+            encrypted_data: EncryptedData::try_from(vec![0u8; EncryptedData::min_size()]).unwrap(),
+            resource_view_key: None,
+        },
+        auth,
+        tag: UtxoTag::new(0),
+    }
+}
+
+/// Budget UTXO `idx` spent through `leaf`, with no committed root recorded, so the wallet builds no covenant claim.
+fn claimless_input(w: &World, idx: usize, leaf: usize) -> StealthInputWitness {
+    let (witness, _root) = script_path_witness(&w.leaves, &w.leaves[leaf]).unwrap();
+    StealthInputWitness {
+        mask_and_value: MaskAndValue {
+            mask: w.budget[idx].mask.clone(),
+            value: w.budget[idx].value,
+        },
+        witness,
+        condition_root: None,
+    }
+}
+
+#[test]
+fn owner_recall_without_a_claim_does_not_reveal_what_is_left() {
+    let mut w = world();
+    pay_ok(&mut w, 0, 30, 0);
+    let total: u64 = w.budget.iter().map(|u| u.value).sum();
+    let owner_pk = w.owner.pk;
+    let outs = vec![witness_output(&mut w, 40, total, SpendAuthorization::Key(owner_pk))];
+    let inputs = vec![claimless_input(&w, 0, 1), claimless_input(&w, 1, 1)];
+    let recall = create_transfer_statement(inputs, Amount::zero(), outs.iter(), None).unwrap();
+    // Nothing in the statement says how much is recalled: no claim, no revealed amount.
+    assert!(recall.covenant_claims.is_empty());
+    assert!(recall.outputs_statement.revealed_output.is_none());
+    let tx = w
+        .test
+        .transaction()
+        .stealth_transfer(w.resource, recall)
+        .finish()
+        .seal(&w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn pay_without_a_covenant_claim_is_refused() {
+    let mut w = world();
+    let budget_root = root_of(&w.leaves);
+    let payee_root = root_of(&[key_leaf(w.payees[0].pk)]);
+    let change = w.budget[0].value - 10;
+    let outs = vec![
+        witness_output(&mut w, 41, change, SpendAuthorization::Script(budget_root)),
+        witness_output(&mut w, 42, 10, SpendAuthorization::Script(payee_root)),
+    ];
+    let spend = create_transfer_statement(vec![claimless_input(&w, 0, 0)], Amount::zero(), outs.iter(), None).unwrap();
+    assert!(spend.covenant_claims.is_empty());
+    let tx = tx_method(&w, w.leash, "pay", args![spend], &w.agent.sk.clone());
+    let reason = w.test.execute_expect_failure(tx, vec![]);
+    assert_reject_reason(&reason, "familiar: spend without a covenant claim");
 }

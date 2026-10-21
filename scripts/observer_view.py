@@ -25,7 +25,8 @@ except ImportError:  # the pay argument stays undecoded, everything else still w
 def fetch(path, tries=4):
     for i in range(tries):
         try:
-            with urllib.request.urlopen(INDEXER + path, timeout=60) as r:
+            req = urllib.request.Request(INDEXER + path, headers={"User-Agent": "familiar-observer/1.0 (curl-compatible)"})
+            with urllib.request.urlopen(req, timeout=60) as r:
                 return json.load(r)
         except Exception as e:  # noqa: BLE001 - network errors are retried, then reported
             if i == tries - 1:
@@ -79,6 +80,9 @@ def walk(o):
 def cbor_leaf(leaf):
     """A spend-condition leaf as CBOR: [[kind, body], ...], kind 0 = access rule, 3 = covenant."""
     parts = []
+    # an `all` leaf is one more list level: [[cond, cond]]
+    while isinstance(leaf, list) and len(leaf) == 1 and isinstance(leaf[0], list) and leaf[0] and isinstance(leaf[0][0], list):
+        leaf = leaf[0]
     for cond in leaf:
         if not (isinstance(cond, list) and cond):
             continue
@@ -140,7 +144,11 @@ def json_leaf(leaf):
                 ids = [w for w in s.replace('"', " ").replace("}", " ").split() if len(w) == 64]
                 parts.append(f"public_key({short(ids[0]) if ids else '?'})")
         elif "Covenant" in cond:
-            parts.append(f"covenant {s[:80]}")
+            cov = cond["Covenant"]
+            if isinstance(cov, dict) and "BalancePreserved" in cov:
+                parts.append(f"BalancePreserved({cov['BalancePreserved']})")
+            else:
+                parts.append(f"covenant {s[:80]}")
         else:
             parts.append(s[:60])
     return " AND ".join(parts) or "?"
@@ -189,14 +197,10 @@ def describe_statement(d, names, visible, hidden, fee=False):
                 )
         else:
             visible.append(f"spends key-path UTXO `{short(inp['commitment'])}`")
-    n_hidden = 0
     for out in d["outputs"]:
         visible.append(f"new UTXO `{short(out['commitment'])}` locked under {out['auth']} {names.of(out['to'])}")
-        n_hidden += 1
-    if n_hidden:
-        hidden.append(f"the amount in each of the {n_hidden} new UTXO(s) (Pedersen commitments)")
-    if d["inputs"]:
-        hidden.append("the amount in each spent UTXO")
+    hidden.append(("outputs", len(d["outputs"])))
+    hidden.append(("inputs", len(d["inputs"])))
     for c in d["claims"]:
         visible.append(f"covenant claim: exactly **{c} uT** leaves the tree in this spend (cleartext, proven)")
     rev = d.get("revealed_out")
@@ -247,14 +251,25 @@ def observe(step, names):
             elif call.get("args"):
                 v.append("method arguments are public")
         elif "CallFunction" in ins:
-            v.append(f"calls `{ins['CallFunction'].get('function')}` on template `{short(ins['CallFunction'].get('template_address'), 16)}`")
+            cf = ins["CallFunction"]
+            v.append(f"calls `{cf.get('function')}` on template `{short(cf.get('address') or cf.get('template_address'), 16)}`")
+            if cf.get("args"):
+                v.append("function arguments are public (here: the agent and owner keys, the rule, the payee roots)")
         elif "StealthTransfer" in ins:
             describe_statement(json_statement(ins["StealthTransfer"]["statement"]), names, v, h)
         elif "PublishTemplate" in ins or "PublishTemplateBinary" in json.dumps(ins)[:40]:
             v.append("publishes a template (the WASM is public)")
-    # de-duplicate the hidden list, keep order
+    n_out = sum(x[1] for x in h if isinstance(x, tuple) and x[0] == "outputs")
+    n_in = sum(x[1] for x in h if isinstance(x, tuple) and x[0] == "inputs")
+    texts = [x for x in h if isinstance(x, str)]
+    hidden = []
+    if n_in:
+        hidden.append(f"the amount in each of the {n_in} spent UTXO(s)")
+    if n_out:
+        hidden.append(f"the amount in each of the {n_out} new UTXO(s) (Pedersen commitments with range proofs)")
     seen = set()
-    out["hidden"] = [x for x in h if not (x in seen or seen.add(x))]
+    hidden += [x for x in texts if not (x in seen or seen.add(x))]
+    out["hidden"] = hidden
     return out
 
 
