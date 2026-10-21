@@ -8,7 +8,7 @@
 //! 5. attacks, each submitted for real so the refusal is on-chain: over the per-payment cap, over the window limit,
 //!    an unlisted payee, a plain transfer of the budget, a stranger calling `pay`;
 //! 6. the owner recalls the rest through the hidden recall leaf;
-//! 7. part 2, an AI agent under prompt injection: a second leash in coupon mode (no amount on-chain) with single-use
+//! 7. part 2, an AI agent under prompt injection: a second leash in coupon mode (no µT amount on-chain) with single-use
 //!    payee roots; an obedient agent
 //!    (`agent.rs`) reads an inbox with injected instructions and turns each into a payment; the network refuses every
 //!    injected one with an exact reason; the owner pauses the leash and recalls the budget.
@@ -1047,7 +1047,7 @@ async fn agent_demo(
          {DEMO_COUPONS} hidden coupons of one denomination (drawn at random by the owner, written nowhere, not even in this report; on-chain it appears \
          nowhere), at most {DEMO_PER_PAYMENT} coupons per payment and {DEMO_PER_WINDOW} per window, single-use payee \
          roots (the candle shop handed the owner three one-time roots). A payment spends whole coupons without a \
-         covenant claim, so no amount is published. The agent obeys every payment instruction it reads, including \
+         covenant claim, so no µT amount is published. The agent obeys every payment instruction it reads, including \
          injected ones, and turns \"pay N uT\" into N / denomination coupons, rounded up; each row quotes the text it acted on."
     );
     r.section("**Setup (owner)**");
