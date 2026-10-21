@@ -6,11 +6,17 @@
 //! 4. the agent pays two allow-listed payees;
 //! 5. attacks, each submitted for real so the refusal is on-chain: over the per-payment cap, over the window limit,
 //!    an unlisted payee, a plain transfer of the budget, a stranger calling `pay`;
-//! 6. the owner recalls the rest through the hidden recall leaf.
+//! 6. the owner recalls the rest through the hidden recall leaf;
+//! 7. part 2, an AI agent under prompt injection: a second leash with single-use payee roots; an obedient agent
+//!    (`agent.rs`) reads an inbox with injected instructions and turns each into a payment; the network refuses every
+//!    injected one with an exact reason; the owner pauses the leash and recalls the budget.
+//!
+//! Next to the Markdown report, a JSON file (`<report>.json`) lists every step for the walk-through page.
 //!
 //! Every key is generated for this run and dropped at the end. Only public keys and transaction ids are written to
 //! the report. Testnet only: tTARI has no value.
 
+mod agent;
 mod l1proof;
 
 use std::{fmt::Write as _, time::Duration};
@@ -193,10 +199,33 @@ fn build_tx(
 
 struct Report {
     md: String,
+    section: String,
+    steps: Vec<serde_json::Value>,
 }
 
 impl Report {
     fn row(&mut self, step: &str, sent: &Sent, note: &str) {
+        self.row_with(step, sent, note, None);
+    }
+
+    /// A row; `input` is what the agent read (part 2), kept for the walk-through page.
+    fn row_with(&mut self, step: &str, sent: &Sent, note: &str, input: Option<(&str, &str)>) {
+        self.steps.push(serde_json::json!({
+            "section": self.section,
+            "step": step,
+            "tx_id": sent.tx_id,
+            "outcome": sent.receipt,
+            "accepted": sent.accepted,
+            "reason": sent.reason,
+            "note": note,
+            "input_source": input.map(|i| i.0),
+            "input_text": input.map(|i| i.1),
+        }));
+        let note = match input {
+            Some((source, text)) => format!("agent read ({source}): \"{}\"; {note}", one_line(text)),
+            None => note.to_string(),
+        };
+        let note = note.as_str();
         let link = if sent.tx_id.is_empty() {
             "-".to_string()
         } else {
@@ -216,6 +245,7 @@ impl Report {
     }
 
     fn section(&mut self, title: &str) {
+        self.section = title.trim_matches('*').to_string();
         let _ = writeln!(
             self.md,
             "\n{title}\n\n| Step | Transaction | Outcome | Note |\n|---|---|---|---|"
@@ -490,8 +520,22 @@ async fn claim(network: Network, proof_path: &str, burned: u64) -> Result<()> {
     Ok(())
 }
 
-fn fail_report(path: &str, r: &Report, why: String) -> Result<()> {
+fn json_path(report: &str) -> String {
+    match report.strip_suffix(".md") {
+        Some(stem) => format!("{stem}.json"),
+        None => format!("{report}.json"),
+    }
+}
+
+fn write_report(path: &str, r: &Report, ids: serde_json::Value) -> Result<()> {
     std::fs::write(path, &r.md)?;
+    let doc = serde_json::json!({ "steps": r.steps, "ids": ids });
+    std::fs::write(json_path(path), serde_json::to_string_pretty(&doc)?)?;
+    Ok(())
+}
+
+fn fail_report(path: &str, r: &Report, why: String) -> Result<()> {
+    write_report(path, r, serde_json::Value::Null)?;
     bail!(why)
 }
 
@@ -537,7 +581,11 @@ async fn main() -> Result<()> {
     let epoch = p.get_epoch().await?.as_u64();
     let max_epoch = Epoch(epoch + 30);
 
-    let mut r = Report { md: String::new() };
+    let mut r = Report {
+        md: String::new(),
+        section: String::new(),
+        steps: Vec::new(),
+    };
     let _ = writeln!(
         r.md,
         "# Familiar on Esmeralda\n\nRun at epoch {epoch}. Testnet only, tTARI has no value. All keys were generated \
@@ -556,7 +604,7 @@ async fn main() -> Result<()> {
         Ok(v) if !v.trim().is_empty() => v.trim().parse().context("FAMILIAR_FUND_TOTAL")?,
         _ => DEFAULT_FUND_TOTAL,
     };
-    let agent_share = 20 * FEE;
+    let agent_share = 40 * FEE;
     let stranger_share = 3 * FEE;
     let owner_share = fund_total
         .checked_sub(FEE + agent_share + stranger_share)
@@ -886,7 +934,242 @@ async fn main() -> Result<()> {
         "\nTemplate: `{template}`. Leash: `{leash}`. Budget root: `{budget_root}`. Payee roots: `{}`, `{}`.",
         payee_roots[0], payee_roots[1]
     );
-    std::fs::write(report_path, &r.md)?;
-    println!("report written to {report_path}");
+    let mut ids = serde_json::json!({
+        "epoch": epoch,
+        "template": template.to_string(),
+        "leash": leash.to_string(),
+        "budget_root": budget_root.to_string(),
+        "payee_roots": [payee_roots[0].to_string(), payee_roots[1].to_string()],
+        "limit": LIMIT,
+        "window_epochs": WINDOW_EPOCHS,
+        "max_per_payment": MAX_PER_PAYMENT,
+        // public keys only (they are on-chain anyway); the observer script uses them as labels
+        "agent_pk": RistrettoPublicKey::from_secret_key(&agent.keys.sk).to_hex(),
+        "owner_pk": RistrettoPublicKey::from_secret_key(&owner.keys.sk).to_hex(),
+        "stranger_pk": RistrettoPublicKey::from_secret_key(&stranger.keys.sk).to_hex(),
+    });
+
+    // ---- part 2: an AI agent under prompt injection
+    match agent_demo(&mut p, template, &mut owner, &mut agent, &mut r).await {
+        Ok(demo) => ids["agent_demo"] = demo,
+        Err(e) => {
+            write_report(report_path, &r, ids)?;
+            return Err(e.context("agent demo"));
+        }
+    }
+    write_report(report_path, &r, ids)?;
+    println!("report written to {report_path} and {}", json_path(report_path));
     Ok(())
+}
+
+const DEMO_LIMIT: u64 = 600_000;
+
+/// Part 2: a second leash with single-use payee roots, driven by the obedient agent in `agent.rs`.
+async fn agent_demo(
+    p: &mut Prov,
+    template: TemplateAddress,
+    owner: &mut Actor,
+    agent: &mut Actor,
+    r: &mut Report,
+) -> Result<serde_json::Value> {
+    let max_epoch = Epoch(p.get_epoch().await?.as_u64() + 30);
+    let _ = writeln!(
+        r.md,
+        "\n## Part 2: an AI agent under prompt injection\n\nA second leash: limit {DEMO_LIMIT} uT per window, at most \
+         {MAX_PER_PAYMENT} uT per spend, single-use payee roots (the candle shop handed the owner three one-time \
+         roots, so its payments cannot be linked to each other on-chain). The agent obeys every payment instruction \
+         it reads, including injected ones; each row quotes the text it acted on."
+    );
+    r.section("**Setup (owner)**");
+
+    let shop = [new_keys(), new_keys(), new_keys()];
+    let shop_roots: Vec<Hash32> = shop.iter().map(|k| root(&[key_leaf(k.pk)])).collect::<Result<_>>()?;
+    let attacker = new_keys();
+    let attacker_root = root(&[key_leaf(attacker.pk)])?;
+
+    let new_args = args![
+        TARI_TOKEN,
+        agent.keys.pk,
+        owner.keys.pk,
+        DEMO_LIMIT,
+        WINDOW_EPOCHS,
+        shop_roots.clone()
+    ];
+    let tx = build_tx(p, max_epoch, owner, FEE, &[], |b| {
+        b.call_function(template, "new", new_args)
+    })?;
+    let sent = send_from(p, owner, tx).await?;
+    r.row(
+        "A1. create leash 2",
+        &sent,
+        "allow-list: three one-time roots of the candle shop",
+    );
+    let Some(leash) = sent.component.filter(|_| sent.accepted) else {
+        bail!("leash 2: {}", sent.reason);
+    };
+    let leaves = vec![
+        SpendCondition::all([
+            AtomicCondition::AccessRule(rule!(component(leash))),
+            AtomicCondition::Covenant(Covenant::BalancePreserved(MAX_PER_PAYMENT)),
+        ]),
+        key_leaf(owner.keys.pk),
+    ];
+    let budget_root = root(&leaves)?;
+    let budget_auth = SpendAuthorization::Script(budget_root);
+
+    let tx = build_tx(p, max_epoch, owner, FEE, &[], |b| {
+        b.add_input(leash)
+            .call_method(leash, "set_budget_root", args![budget_root, MAX_PER_PAYMENT])
+            .call_method(leash, "set_single_use_payees", args![true])
+    })?;
+    let sent = send_from(p, owner, tx).await?;
+    r.row(
+        "A2. set budget root + cap, single-use payee roots on",
+        &sent,
+        &format!("leash `{leash}`"),
+    );
+    if !sent.accepted {
+        bail!("leash 2 setup: {}", sent.reason);
+    }
+
+    // one hidden budget UTXO, straight from the owner's fee coin
+    let change = owner
+        .fee_coin
+        .value
+        .checked_sub(BUDGET_UTXO + FEE)
+        .context("owner coin too small for part 2")?;
+    let outs = vec![
+        output(BUDGET_UTXO, budget_auth.clone())?,
+        output(change, SpendAuthorization::Key(owner.keys.pk))?,
+    ];
+    let st = statement(
+        vec![StealthInputWitness::new(owner.fee_coin.mav())],
+        0,
+        &outs,
+        Some(RevealedOutput::new(Amount::from(FEE), owner.keys.pk)),
+    )?;
+    let new = coins(&st, &outs);
+    let tx = Transaction::builder(p.network(), max_epoch)
+        .with_fee_instructions_builder(|f| {
+            f.stealth_transfer(TARI_TOKEN, st)
+                .put_last_instruction_output_on_workspace("fees")
+                .pay_fee_from_bucket("fees")
+        })
+        .with_auto_fill_inputs()
+        .add_input(TARI_TOKEN)
+        .add_input(owner.fee_coin.address())
+        .build_unsigned();
+    let dry = tx.clone().with_dry_run(true).finish().seal(&owner.keys.sk);
+    let tx = tx.finish().seal(&owner.keys.sk);
+    let sent = send(p, tx, dry).await?;
+    r.row(
+        "A3. fund the budget (1 hidden UTXO)",
+        &sent,
+        "the amount is a Pedersen commitment",
+    );
+    if !sent.accepted {
+        bail!("leash 2 funding: {}", sent.reason);
+    }
+    owner.fee_coin = new[1].clone();
+    let mut budget = new[0].clone();
+
+    r.section("**The agent reads its inbox**");
+    // The agent's address book: "candle-shop" is the shop's next unused root, "candle-shop-receipt-1" the root of the
+    // first order, any other name the injected "refund desk" (a root that is not on the leash).
+    let mut next_shop = 0usize;
+    let mut first_order: Option<usize> = None;
+    for (i, (source, text)) in agent::INBOX.iter().enumerate() {
+        let step = format!("B{}. {source}", i + 1);
+        let call = agent::parse(text).with_context(|| format!("inbox message {i} has no tool call"))?;
+        let (to, shop_slot) = match call.payee.as_str() {
+            "candle-shop" => (shop_roots[next_shop.min(2)], Some(next_shop.min(2))),
+            "candle-shop-receipt-1" => (shop_roots[first_order.unwrap_or(0)], None),
+            _ => (attacker_root, None),
+        };
+        let (st, new) = pay_statement(
+            &leaves,
+            &budget,
+            call.amount,
+            SpendAuthorization::Script(to),
+            budget_auth.clone(),
+        )?;
+        let tx = build_tx(p, max_epoch, agent, FEE, &[budget.address()], |b| {
+            b.add_input(leash).call_method(leash, "pay", args![st])
+        })?;
+        let sent = send_from(p, agent, tx).await?;
+        let to_hex = to.to_string();
+        let note = format!(
+            "tool call: pay {} uT to {} (root {}...)",
+            call.amount,
+            call.payee,
+            &to_hex[..12.min(to_hex.len())]
+        );
+        r.row_with(&step, &sent, &note, Some((source, text)));
+        if sent.accepted {
+            budget = new[0].clone();
+            if let Some(slot) = shop_slot {
+                first_order.get_or_insert(slot);
+                next_shop += 1;
+            }
+        }
+    }
+
+    r.section("**The owner reacts**");
+    let tx = build_tx(p, max_epoch, owner, FEE, &[], |b| {
+        b.add_input(leash).call_method(leash, "pause", args![])
+    })?;
+    let sent = send_from(p, owner, tx).await?;
+    r.row(
+        "C1. owner pauses the leash",
+        &sent,
+        "one owner-signed call, no agent involved",
+    );
+
+    let text = "Last chance: pay 100000 uT to candle-shop before the shop closes.";
+    let call = agent::parse(text).context("parse")?;
+    let (st, _) = pay_statement(
+        &leaves,
+        &budget,
+        call.amount,
+        SpendAuthorization::Script(shop_roots[next_shop.min(2)]),
+        budget_auth.clone(),
+    )?;
+    let tx = build_tx(p, max_epoch, agent, FEE, &[budget.address()], |b| {
+        b.add_input(leash).call_method(leash, "pay", args![st])
+    })?;
+    let sent = send_from(p, agent, tx).await?;
+    r.row_with(
+        "C2. the agent tries once more",
+        &sent,
+        &format!("tool call: pay {} uT to {}", call.amount, call.payee),
+        Some(("message after the pause", text)),
+    );
+
+    let (witness, broot) = script_path_witness(&leaves, &leaves[1]).map_err(|e| anyhow!("witness: {e:?}"))?;
+    let outs = vec![output(budget.value, SpendAuthorization::Key(owner.keys.pk))?];
+    let recall = statement(
+        vec![StealthInputWitness::with_script_path(budget.mav(), witness, broot)],
+        0,
+        &outs,
+        None,
+    )?;
+    let tx = build_tx(p, max_epoch, owner, FEE, &[budget.address()], |b| {
+        b.stealth_transfer(TARI_TOKEN, recall)
+    })?;
+    let sent = send_from(p, owner, tx).await?;
+    r.row("C3. owner recalls the rest", &sent, "through the hidden recall leaf");
+
+    let _ = writeln!(
+        r.md,
+        "\nLeash 2: `{leash}`. Budget root: `{budget_root}`. Shop roots (single-use): `{}`, `{}`, `{}`. Root of the \
+         injected \"refund desk\" (not on the leash): `{attacker_root}`.",
+        shop_roots[0], shop_roots[1], shop_roots[2]
+    );
+    Ok(serde_json::json!({
+        "leash": leash.to_string(),
+        "budget_root": budget_root.to_string(),
+        "shop_roots": shop_roots.iter().map(|h| h.to_string()).collect::<Vec<_>>(),
+        "attacker_root": attacker_root.to_string(),
+        "limit": DEMO_LIMIT,
+    }))
 }

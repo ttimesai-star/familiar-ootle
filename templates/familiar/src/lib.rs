@@ -39,6 +39,9 @@ mod familiar {
         /// The per-spend cap, the same number as in the errand leaf's `BalancePreserved`. Set with the budget root.
         max_per_payment: u64,
         payees: Vec<Hash32>,
+        /// When on, a payee root is struck off the allow-list once it is paid, so every payment goes to a fresh root
+        /// and an observer cannot link repeat payments to the same payee (the payee hands the owner several roots).
+        single_use_payees: bool,
         payments: u64,
         paused: bool,
     }
@@ -71,6 +74,7 @@ mod familiar {
                 budget_root: None,
                 max_per_payment: 0,
                 payees,
+                single_use_payees: false,
                 payments: 0,
                 paused: false,
             })
@@ -83,6 +87,7 @@ mod familiar {
                     .method("set_policy", rule!(public_key(owner)))
                     .method("set_payees", rule!(public_key(owner)))
                     .method("set_budget_root", rule!(public_key(owner)))
+                    .method("set_single_use_payees", rule!(public_key(owner)))
                     .default(rule!(deny_all)),
             )
             // No component owner: an owner would bypass the method rules above (it could call `pay`), and nobody needs
@@ -109,10 +114,16 @@ mod familiar {
             assert!(!spend.stealth_inputs().is_empty(), "familiar: nothing spent");
 
             let mut payee_outputs = 0u64;
+            let mut paid_roots: Vec<Hash32> = Vec::new();
             for output in spend.stealth_outputs() {
                 match &output.auth {
                     SpendAuthorization::Script(root) if *root == budget_root => {}
-                    SpendAuthorization::Script(root) if self.payees.contains(root) => payee_outputs += 1,
+                    SpendAuthorization::Script(root) if self.payees.contains(root) => {
+                        payee_outputs += 1;
+                        if !paid_roots.contains(root) {
+                            paid_roots.push(*root);
+                        }
+                    }
                     _ => panic!("familiar: output to a payee not on the leash"),
                 }
             }
@@ -154,6 +165,9 @@ mod familiar {
             self.window_start = window.start;
             self.spent = window.spent;
             self.payments += 1;
+            if self.single_use_payees {
+                self.payees.retain(|root| !paid_roots.contains(root));
+            }
             emit_event(
                 "Paid",
                 metadata![
@@ -164,8 +178,10 @@ mod familiar {
             );
         }
 
-        /// Public view of the leash: the rule and the current window. The budget itself is not here: it lives in
-        /// hidden UTXOs that only the owner and the agent can open.
+        /// The rule and the current window. Component state is public on Ootle, so this hides nothing that the
+        /// state and the payment amounts do not already show; it exists for clients. The budget itself is not here: it
+        /// lives in hidden UTXOs that only the owner and the agent can open. There is deliberately no "remaining"
+        /// field: what is left of the window is not what is left of the budget.
         pub fn status(&self) -> LeashStatus {
             let policy = Policy {
                 limit: self.limit,
@@ -183,10 +199,11 @@ mod familiar {
                 max_per_payment: self.max_per_payment,
                 window_start: seen.start,
                 spent_in_window: seen.spent,
-                remaining_in_window: self.limit.saturating_sub(seen.spent),
                 payments: self.payments,
                 paused: self.paused,
                 budget_root_set: self.budget_root.is_some(),
+                payees_left: self.payees.len() as u64,
+                single_use_payees: self.single_use_payees,
             }
         }
 
@@ -227,6 +244,13 @@ mod familiar {
             self.window_epochs = window_epochs;
         }
 
+        /// Turns single-use payee roots on or off. With it on, the owner keeps the allow-list topped up with fresh
+        /// roots from each payee (`set_payees`); a paid root cannot be paid again.
+        pub fn set_single_use_payees(&mut self, on: bool) {
+            self.single_use_payees = on;
+            emit_event("SingleUsePayees", metadata!["on" => on.to_string()]);
+        }
+
         pub fn set_payees(&mut self, payees: Vec<Hash32>) {
             check_payees(&payees);
             if let Some(root) = self.budget_root {
@@ -253,10 +277,11 @@ mod familiar {
         pub max_per_payment: u64,
         pub window_start: u64,
         pub spent_in_window: u64,
-        pub remaining_in_window: u64,
         pub payments: u64,
         pub paused: bool,
         pub budget_root_set: bool,
+        pub payees_left: u64,
+        pub single_use_payees: bool,
     }
 
     fn check_payees(payees: &[Hash32]) {

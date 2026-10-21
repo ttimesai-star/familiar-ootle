@@ -465,6 +465,7 @@ fn admin_methods_are_owner_only() {
             "set_budget_root",
             args![root_of(&[key_leaf(w.agent.pk)]), MAX_PER_PAYMENT],
         ),
+        ("set_single_use_payees", args![true]),
     ] {
         let tx = tx_method(&w, w.leash, method, a, &w.agent.sk.clone());
         let reason = w.test.execute_expect_failure(tx, vec![]);
@@ -748,4 +749,91 @@ fn set_payees_rejects_duplicates() {
     );
     let reason = w.test.execute_expect_failure(tx, vec![]);
     assert_reject_reason(&reason, "familiar: duplicate payee");
+}
+
+// ---------------------------------------------------------------- privacy: single-use payee roots
+
+/// Turns single-use payee roots on and replaces the allow-list with `roots`.
+fn single_use(w: &mut World, roots: Vec<Hash32>) {
+    let tx = tx_method(w, w.leash, "set_single_use_payees", args![true], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+    let tx = tx_method(w, w.leash, "set_payees", args![roots], &w.owner.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn single_use_payee_root_cannot_be_paid_twice() {
+    let mut w = world();
+    // Payee 0 hands the owner two roots (two one-time keys); an observer sees two unrelated roots.
+    let second = keys(&mut w.test, 6);
+    let roots = vec![root_of(&[key_leaf(w.payees[0].pk)]), root_of(&[key_leaf(second.pk)])];
+    single_use(&mut w, roots);
+
+    pay_ok(&mut w, 0, 10, 0);
+    // The first root is struck off: paying it again is refused, so repeat payments cannot share a root.
+    let data = pay_statement(&w, 0, 10, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: output to a payee not on the leash",
+    );
+    // The fresh root still works.
+    let data = pay_statement(
+        &w,
+        0,
+        10,
+        OutputAuthSpec::Conditions(vec![key_leaf(second.pk)]),
+        budget_auth(&w),
+    );
+    let tx = pay_tx(&w, &data, &w.agent.sk.clone());
+    w.test.execute_expect_success(tx, vec![]);
+}
+
+#[test]
+fn single_use_off_by_default_repeat_root_is_accepted() {
+    let mut w = world();
+    pay_ok(&mut w, 0, 10, 0);
+    pay_ok(&mut w, 0, 10, 0);
+}
+
+#[test]
+fn single_use_runs_out_of_roots_until_the_owner_tops_up() {
+    let mut w = world();
+    let roots = vec![root_of(&[key_leaf(w.payees[0].pk)])];
+    single_use(&mut w, roots);
+    pay_ok(&mut w, 0, 10, 0);
+    let data = pay_statement(&w, 0, 10, payee_auth(&w, 1), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        "familiar: output to a payee not on the leash",
+    );
+    // The owner tops up with a fresh root; the agent can pay again.
+    let tx = tx_method(
+        &w,
+        w.leash,
+        "set_payees",
+        args![vec![root_of(&[key_leaf(w.payees[1].pk)])]],
+        &w.owner.sk.clone(),
+    );
+    w.test.execute_expect_success(tx, vec![]);
+    pay_ok(&mut w, 0, 10, 1);
+}
+
+#[test]
+fn a_refused_payment_does_not_consume_a_single_use_root() {
+    let mut w = world();
+    let roots = vec![root_of(&[key_leaf(w.payees[0].pk)])];
+    single_use(&mut w, roots);
+    // Over the per-spend cap: refused by the covenant, the whole transaction is rolled back with the root intact.
+    let data = pay_statement(&w, 0, MAX_PER_PAYMENT + 1, payee_auth(&w, 0), budget_auth(&w));
+    pay_refused(
+        &mut w,
+        &data,
+        Who::Agent,
+        &format!("covenant not satisfied: BalancePreserved({MAX_PER_PAYMENT})"),
+    );
+    pay_ok(&mut w, 0, 10, 0);
 }
