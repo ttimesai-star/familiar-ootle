@@ -6,9 +6,8 @@
 //! * errand: `component(<this leash>)` AND `BalancePreserved(max_per_payment)`: the UTXOs can only be spent from
 //!   inside this component, every hidden unit not paid out must go back under the same tree, and a single spend may
 //!   move at most `max_per_payment` out;
-//! * recall: `public_key(<recall key>)`: a random key of its own, held by the owner and not the owner key of the
-//!   access rules, so nobody can compute this leaf before it is used. The owner can sweep everything at any time,
-//!   co-signing with the recall key. The leaf stays hidden until it is used.
+//! * recall: `public_key(<recall key>)`, a random key of its own (not the owner key of the access rules): the owner can
+//!   sweep everything at any time, co-signing with it. The leaf stays hidden, and the key unseen, until it is used.
 //!
 //! This component adds what a stateless condition cannot: a limit per window of epochs, an allow-list of payees and a
 //! pause switch. `pay` refuses any spend that is not shaped like "leash UTXOs in, change back under the budget root,

@@ -115,7 +115,7 @@ was the owner key and the coupon denomination a constant. The template and the p
 4. **Use the prebuilt template.** Release [`esmeralda-2026-10-21-recall-key`](https://github.com/ttimesai-star/familiar-ootle/releases/tag/esmeralda-2026-10-21-recall-key)
    has the exact `familiar.min.wasm` of the latest run and the current client binaries; every CI run also uploads the
    wasm (artifact `familiar-wasm`). sha256 of the latest run: `653ebb3f83cdcd38fd4b2f8175b7e266afa4fc00754162c7b2b088183cf886ca`.
-   To rebuild it byte for byte: rustc 1.99.0 (pinned in `ci.yml`; another rustc gives another hash for the same source),
+   To rebuild it byte for byte: rustc 1.99.1 (pinned in `ci.yml`; another rustc gives another hash for the same source),
    `cargo build --release --target wasm32-unknown-unknown` in `templates/familiar`, then `wasm-opt` (binaryen 119) with
    the flags in `ci.yml`. Earlier releases are listed, with what changed, in [`docs/releases.md`](docs/releases.md).
 5. **Engine tests** (about 2 GB of RAM): `cargo test --workspace` (Rust stable, `wasm32-unknown-unknown` target).
